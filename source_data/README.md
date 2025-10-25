@@ -43,4 +43,4 @@ For the property "Meredith Woods" (id: `row-7wny_yxwp-rx4m`, Staten Island), the
 
 So I deleted the 8 polygons that don't resemble the actual park. Here's the [modified geojson for "Meredith Woods" property](./meredith_woods_fixed.geojson).
 
-![Meredith Woods Fixed Polygons](./assets/meredith-woods-fixed-multipolygon.jpeg)
+![Meredith Woods Fixed Polygons](./assets/meredith-woods-original-multipolygon-modified.jpeg)
