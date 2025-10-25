@@ -42,7 +42,10 @@ using namespace geos::io;
 /* Concave hull */
 using namespace geos::algorithm::hull;
 
-const char *SOURCE_DATA_FILE = "./output_data/0b_parks_filtered.geojson";
+/* JSON (GEOS vendored version) */
+using json = geos_nlohmann::json;
+
+const char *SOURCE_DATA_FILE = "./output_data/0c_parks_filtered_augmented.geojson";
 const char *OUTPUT_PATH_HULLS = "./output_data/1a_parks_concave_hulls.geojson";
 const char *OUTPUT_PATH_WITH_HULLS = "./output_data/1a_parks_with_concave_hulls.geojson";
 
@@ -108,6 +111,50 @@ bool createDirectoryIfNotExists(const std::string &dir_path)
   }
   return true;
 #endif
+}
+
+/* Convert nlohmann::json to GeoJSONValue */
+GeoJSONValue jsonToGeoJSONValue(const json &j)
+{
+  if (j.is_null())
+  {
+    return GeoJSONValue();
+  }
+  else if (j.is_boolean())
+  {
+    return GeoJSONValue(j.get<bool>());
+  }
+  else if (j.is_number_integer())
+  {
+    return GeoJSONValue(static_cast<double>(j.get<int64_t>()));
+  }
+  else if (j.is_number_float())
+  {
+    return GeoJSONValue(j.get<double>());
+  }
+  else if (j.is_string())
+  {
+    return GeoJSONValue(j.get<std::string>());
+  }
+  else if (j.is_array())
+  {
+    std::vector<GeoJSONValue> arr;
+    for (const auto &item : j)
+    {
+      arr.push_back(jsonToGeoJSONValue(item));
+    }
+    return GeoJSONValue(arr);
+  }
+  else if (j.is_object())
+  {
+    std::map<std::string, GeoJSONValue> obj;
+    for (auto it = j.begin(); it != j.end(); ++it)
+    {
+      obj[it.key()] = jsonToGeoJSONValue(it.value());
+    }
+    return GeoJSONValue(obj);
+  }
+  return GeoJSONValue();
 }
 
 int main()
@@ -252,7 +299,10 @@ int main()
         /* Serialize concave hull to GeoJSON and add as property */
         GeoJSONWriter geom_writer;
         std::string hull_geojson = geom_writer.write(hull_copy.get());
-        properties_with_hull["concave_hull_polygon"] = GeoJSONValue(hull_geojson);
+
+        /* Parse the JSON string and convert to GeoJSONValue object */
+        json hull_json = json::parse(hull_geojson);
+        properties_with_hull["concave_hull_polygon"] = jsonToGeoJSONValue(hull_json);
 
         GeoJSONFeature feature_with_hull(std::move(original_geom_copy), properties_with_hull, feature.getId());
         output_features_with_hulls.push_back(std::move(feature_with_hull));

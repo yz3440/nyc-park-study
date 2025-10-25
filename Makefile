@@ -4,7 +4,7 @@ GEOS_PREFIX = /opt/homebrew/opt/geos
 INCLUDES = -I$(GEOS_PREFIX)/include
 LIBS = -L$(GEOS_PREFIX)/lib -lgeos
 
-TARGET = 1a_concave_hull
+TARGET = build/1a_concave_hull
 SOURCES = 1a_concave_hull.cpp
 
 all: $(TARGET)
