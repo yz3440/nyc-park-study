@@ -36,11 +36,14 @@ for feature in data["features"]:
     concave_hull_dict = properties.get("concave_hull_polygon")
     if not concave_hull_dict:
         # Skip if no concave hull
-        properties["circle_analysis"] = None
+        properties["ca_ch_area_sqm"] = None
+        properties["ca_ch_perimeter_m"] = None
+        properties["ca_polsby_popper"] = None
+        properties["ca_schwartzberg"] = None
+        properties["ca_reock_compactness"] = None
+        properties["ca_circumscribed_circle_radius"] = None
+        properties["ca_circumscribed_circle_area"] = None
         continue
-
-    # Initialize circle analysis dictionary
-    circle_analysis = {}
 
     # Convert to shapely geometry
     concave_hull = shape(concave_hull_dict)
@@ -52,24 +55,24 @@ for feature in data["features"]:
     ch_area = concave_hull_proj.area
     ch_perimeter = concave_hull_proj.length
 
-    circle_analysis["ch_area_sqm"] = ch_area
-    circle_analysis["ch_perimeter_m"] = ch_perimeter
+    properties["ca_ch_area_sqm"] = ch_area
+    properties["ca_ch_perimeter_m"] = ch_perimeter
 
     # Polsby-Popper Compactness: 4π * Area / Perimeter²
     # Ranges from 0 to 1, where 1 is a perfect circle
     if ch_perimeter > 0:
         polsby_popper = (4 * math.pi * ch_area) / (ch_perimeter**2)
-        circle_analysis["polsby_popper"] = polsby_popper
+        properties["ca_polsby_popper"] = polsby_popper
     else:
-        circle_analysis["polsby_popper"] = None
+        properties["ca_polsby_popper"] = None
 
     # Schwartzberg Compactness (Reciprocal of Reock): Perimeter / (2π√(Area/π))
     # Equal to 1 for a circle, increases for less compact shapes
     if ch_area > 0:
         schwartzberg = ch_perimeter / (2 * math.pi * math.sqrt(ch_area / math.pi))
-        circle_analysis["schwartzberg"] = schwartzberg
+        properties["ca_schwartzberg"] = schwartzberg
     else:
-        circle_analysis["schwartzberg"] = None
+        properties["ca_schwartzberg"] = None
 
     # Reock Compactness: Area / Area of minimum bounding circle
     # The minimum bounding circle is calculated from the convex hull
@@ -104,29 +107,28 @@ for feature in data["features"]:
 
     if min_circle_area > 0:
         reock_compactness = ch_area / min_circle_area
-        circle_analysis["reock_compactness"] = reock_compactness
+        properties["ca_reock_compactness"] = reock_compactness
 
         # Calculate the radius of the circumscribed circle
         # Area = π * r², so r = √(Area/π)
         circumscribed_radius = math.sqrt(min_circle_area / math.pi)
-        circle_analysis["circumscribed_circle_radius"] = circumscribed_radius
-        circle_analysis["circumscribed_circle_area"] = min_circle_area
+        properties["ca_circumscribed_circle_radius"] = circumscribed_radius
+        properties["ca_circumscribed_circle_area"] = min_circle_area
     else:
-        circle_analysis["reock_compactness"] = None
-        circle_analysis["circumscribed_circle_radius"] = None
-        circle_analysis["circumscribed_circle_area"] = None
+        properties["ca_reock_compactness"] = None
+        properties["ca_circumscribed_circle_radius"] = None
+        properties["ca_circumscribed_circle_area"] = None
 
-    # Store circle analysis in properties
-    properties["circle_analysis"] = circle_analysis
-
-print(f"  Added circle analysis fields:")
-print(f"    - ch_area_sqm: Concave hull area in square meters")
-print(f"    - ch_perimeter_m: Concave hull perimeter in meters")
-print(f"    - polsby_popper: Polsby-Popper compactness (0-1, 1=circle)")
-print(f"    - schwartzberg: Schwartzberg compactness (1=circle, higher=less compact)")
-print(f"    - reock_compactness: Reock compactness (0-1, 1=circle)")
-print(f"    - circumscribed_circle_radius: Radius of minimum bounding circle (m)")
-print(f"    - circumscribed_circle_area: Area of minimum bounding circle (m²)")
+print(f"  Added circle analysis fields (ca_ prefix):")
+print(f"    - ca_ch_area_sqm: Concave hull area in square meters")
+print(f"    - ca_ch_perimeter_m: Concave hull perimeter in meters")
+print(f"    - ca_polsby_popper: Polsby-Popper compactness (0-1, 1=circle)")
+print(
+    f"    - ca_schwartzberg: Schwartzberg compactness (1=circle, higher=less compact)"
+)
+print(f"    - ca_reock_compactness: Reock compactness (0-1, 1=circle)")
+print(f"    - ca_circumscribed_circle_radius: Radius of minimum bounding circle (m)")
+print(f"    - ca_circumscribed_circle_area: Area of minimum bounding circle (m²)")
 
 # MARK: Rectangularity Analysis - Minimum Rotated Rectangle
 
@@ -139,11 +141,14 @@ for feature in data["features"]:
     concave_hull_dict = properties.get("concave_hull_polygon")
     if not concave_hull_dict:
         # Skip if no concave hull
-        properties["rectangularity_analysis"] = None
+        properties["ra_mrr_vertices"] = None
+        properties["ra_mrr_width"] = None
+        properties["ra_mrr_height"] = None
+        properties["ra_mrr_rotation_degrees"] = None
+        properties["ra_mrr_area_sqm"] = None
+        properties["ra_mrr_rectangularity"] = None
+        properties["ra_mrr_original_ratio"] = None
         continue
-
-    # Initialize rectangularity analysis dictionary
-    rectangularity_analysis = {}
 
     # Convert to shapely geometry
     concave_hull = shape(concave_hull_dict)
@@ -164,7 +169,7 @@ for feature in data["features"]:
     mrr_coords_wgs84 = [
         list(transformer_inv.transform(x, y)) for x, y in mrr_coords_utm
     ]
-    rectangularity_analysis["mrr_vertices"] = mrr_coords_wgs84
+    properties["ra_mrr_vertices"] = mrr_coords_wgs84
 
     # Calculate width and height
     # The MRR has 5 coordinates (last == first), so we have 4 unique vertices
@@ -183,8 +188,8 @@ for feature in data["features"]:
         mrr_width = max(edge1, edge2)
         mrr_height = min(edge1, edge2)
 
-        rectangularity_analysis["mrr_width"] = mrr_width
-        rectangularity_analysis["mrr_height"] = mrr_height
+        properties["ra_mrr_width"] = mrr_width
+        properties["ra_mrr_height"] = mrr_height
 
         # Calculate rotation angle (angle of the longer edge from horizontal)
         # Determine which edge is the width
@@ -205,43 +210,40 @@ for feature in data["features"]:
         elif rotation_degrees >= 180:
             rotation_degrees -= 180
 
-        rectangularity_analysis["mrr_rotation_degrees"] = rotation_degrees
+        properties["ra_mrr_rotation_degrees"] = rotation_degrees
     else:
-        rectangularity_analysis["mrr_width"] = None
-        rectangularity_analysis["mrr_height"] = None
-        rectangularity_analysis["mrr_rotation_degrees"] = None
+        properties["ra_mrr_width"] = None
+        properties["ra_mrr_height"] = None
+        properties["ra_mrr_rotation_degrees"] = None
 
     # Calculate area of MRR
     mrr_area = mrr.area
-    rectangularity_analysis["mrr_area_sqm"] = mrr_area
+    properties["ra_mrr_area_sqm"] = mrr_area
 
     # Rectangularity: ratio of concave hull area to MRR area
     ch_area = concave_hull_proj.area
     if mrr_area > 0:
         rectangularity = ch_area / mrr_area
-        rectangularity_analysis["mrr_rectangularity"] = rectangularity
+        properties["ra_mrr_rectangularity"] = rectangularity
     else:
-        rectangularity_analysis["mrr_rectangularity"] = None
+        properties["ra_mrr_rectangularity"] = None
 
     # Ratio of original multipolygon area to MRR area
     original_area = properties.get("area_sqm")
     if original_area is not None and mrr_area > 0:
         original_ratio = original_area / mrr_area
-        rectangularity_analysis["mrr_original_ratio"] = original_ratio
+        properties["ra_mrr_original_ratio"] = original_ratio
     else:
-        rectangularity_analysis["mrr_original_ratio"] = None
+        properties["ra_mrr_original_ratio"] = None
 
-    # Store rectangularity analysis in properties
-    properties["rectangularity_analysis"] = rectangularity_analysis
-
-print(f"  Added rectangularity analysis fields:")
-print(f"    - mrr_vertices: Vertices of minimum rotated rectangle (WGS84)")
-print(f"    - mrr_width: Width of MRR in meters (longer edge)")
-print(f"    - mrr_height: Height of MRR in meters (shorter edge)")
-print(f"    - mrr_rotation_degrees: Rotation angle in degrees [0, 180)")
-print(f"    - mrr_area_sqm: Area of MRR in square meters")
-print(f"    - mrr_rectangularity: Ratio of concave hull area to MRR area")
-print(f"    - mrr_original_ratio: Ratio of original area to MRR area")
+print(f"  Added rectangularity analysis fields (ra_ prefix):")
+print(f"    - ra_mrr_vertices: Vertices of minimum rotated rectangle (WGS84)")
+print(f"    - ra_mrr_width: Width of MRR in meters (longer edge)")
+print(f"    - ra_mrr_height: Height of MRR in meters (shorter edge)")
+print(f"    - ra_mrr_rotation_degrees: Rotation angle in degrees [0, 180)")
+print(f"    - ra_mrr_area_sqm: Area of MRR in square meters")
+print(f"    - ra_mrr_rectangularity: Ratio of concave hull area to MRR area")
+print(f"    - ra_mrr_original_ratio: Ratio of original area to MRR area")
 
 # MARK: Triangularity Analysis - Douglas-Peucker Simplification
 
@@ -254,11 +256,15 @@ for feature in data["features"]:
     concave_hull_dict = properties.get("concave_hull_polygon")
     if not concave_hull_dict:
         # Skip if no concave hull
-        properties["triangularity_analysis"] = None
+        properties["ta_triangle_vertices"] = None
+        properties["ta_triangle_area_sqm"] = None
+        properties["ta_triangle_perimeter_m"] = None
+        properties["ta_triangularity"] = None
+        properties["ta_dp_tolerance"] = None
+        properties["ta_triangle_edge_lengths"] = None
+        properties["ta_triangle_num_vertices"] = None
+        properties["ta_triangle_regularity"] = None
         continue
-
-    # Initialize triangularity analysis dictionary
-    triangularity_analysis = {}
 
     # Convert to shapely geometry
     concave_hull = shape(concave_hull_dict)
@@ -322,19 +328,18 @@ for feature in data["features"]:
 
     if simplified is None or not isinstance(simplified, Polygon):
         # Couldn't simplify to triangle
-        triangularity_analysis["triangle_vertices"] = None
-        triangularity_analysis["triangle_area_sqm"] = None
-        triangularity_analysis["triangle_perimeter_m"] = None
-        triangularity_analysis["triangularity"] = None
-        triangularity_analysis["dp_tolerance"] = None
-        triangularity_analysis["triangle_edge_lengths"] = None
-        triangularity_analysis["triangle_num_vertices"] = None
-        triangularity_analysis["triangle_regularity"] = None
-        properties["triangularity_analysis"] = triangularity_analysis
+        properties["ta_triangle_vertices"] = None
+        properties["ta_triangle_area_sqm"] = None
+        properties["ta_triangle_perimeter_m"] = None
+        properties["ta_triangularity"] = None
+        properties["ta_dp_tolerance"] = None
+        properties["ta_triangle_edge_lengths"] = None
+        properties["ta_triangle_num_vertices"] = None
+        properties["ta_triangle_regularity"] = None
         continue
 
     # Store the tolerance used
-    triangularity_analysis["dp_tolerance"] = tolerance
+    properties["ta_dp_tolerance"] = tolerance
 
     # Get triangle vertices in UTM
     triangle_coords_utm = list(simplified.exterior.coords)[
@@ -348,22 +353,22 @@ for feature in data["features"]:
     triangle_coords_wgs84 = [
         list(transformer_inv.transform(x, y)) for x, y in triangle_coords_utm
     ]
-    triangularity_analysis["triangle_vertices"] = triangle_coords_wgs84
+    properties["ta_triangle_vertices"] = triangle_coords_wgs84
 
     # Calculate triangle area and perimeter
     triangle_area = simplified.area
     triangle_perimeter = simplified.length
 
-    triangularity_analysis["triangle_area_sqm"] = triangle_area
-    triangularity_analysis["triangle_perimeter_m"] = triangle_perimeter
+    properties["ta_triangle_area_sqm"] = triangle_area
+    properties["ta_triangle_perimeter_m"] = triangle_perimeter
 
     # Triangularity: ratio of concave hull area to triangle area
     ch_area = concave_hull_proj.area
     if triangle_area > 0:
         triangularity = ch_area / triangle_area
-        triangularity_analysis["triangularity"] = triangularity
+        properties["ta_triangularity"] = triangularity
     else:
-        triangularity_analysis["triangularity"] = None
+        properties["ta_triangularity"] = None
 
     # Calculate edge lengths
     num_triangle_vertices = len(triangle_coords_utm)
@@ -375,35 +380,32 @@ for feature in data["features"]:
             length = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
             edge_lengths.append(length)
 
-        triangularity_analysis["triangle_edge_lengths"] = edge_lengths
-        triangularity_analysis["triangle_num_vertices"] = num_triangle_vertices
+        properties["ta_triangle_edge_lengths"] = edge_lengths
+        properties["ta_triangle_num_vertices"] = num_triangle_vertices
 
         # Triangle regularity: ratio of shortest to longest edge
         # Closer to 1 means more regular (equilateral = 1 for triangles)
         if max(edge_lengths) > 0:
             triangle_regularity = min(edge_lengths) / max(edge_lengths)
-            triangularity_analysis["triangle_regularity"] = triangle_regularity
+            properties["ta_triangle_regularity"] = triangle_regularity
         else:
-            triangularity_analysis["triangle_regularity"] = None
+            properties["ta_triangle_regularity"] = None
     else:
-        triangularity_analysis["triangle_edge_lengths"] = None
-        triangularity_analysis["triangle_num_vertices"] = (
+        properties["ta_triangle_edge_lengths"] = None
+        properties["ta_triangle_num_vertices"] = (
             num_triangle_vertices if triangle_coords_utm else None
         )
-        triangularity_analysis["triangle_regularity"] = None
+        properties["ta_triangle_regularity"] = None
 
-    # Store triangularity analysis in properties
-    properties["triangularity_analysis"] = triangularity_analysis
-
-print(f"  Added triangularity analysis fields:")
-print(f"    - triangle_vertices: Vertices of simplified triangle (WGS84)")
-print(f"    - triangle_num_vertices: Number of vertices in simplified polygon")
-print(f"    - triangle_area_sqm: Area of triangle in square meters")
-print(f"    - triangle_perimeter_m: Perimeter of triangle in meters")
-print(f"    - triangularity: Ratio of concave hull area to triangle area")
-print(f"    - dp_tolerance: Douglas-Peucker tolerance used for simplification")
-print(f"    - triangle_edge_lengths: Lengths of the triangle edges (m)")
-print(f"    - triangle_regularity: Ratio of shortest to longest edge")
+print(f"  Added triangularity analysis fields (ta_ prefix):")
+print(f"    - ta_triangle_vertices: Vertices of simplified triangle (WGS84)")
+print(f"    - ta_triangle_num_vertices: Number of vertices in simplified polygon")
+print(f"    - ta_triangle_area_sqm: Area of triangle in square meters")
+print(f"    - ta_triangle_perimeter_m: Perimeter of triangle in meters")
+print(f"    - ta_triangularity: Ratio of concave hull area to triangle area")
+print(f"    - ta_dp_tolerance: Douglas-Peucker tolerance used for simplification")
+print(f"    - ta_triangle_edge_lengths: Lengths of the triangle edges (m)")
+print(f"    - ta_triangle_regularity: Ratio of shortest to longest edge")
 
 # Save the augmented data
 print("\nSaving analysis results...")
