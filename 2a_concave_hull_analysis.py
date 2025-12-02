@@ -146,7 +146,8 @@ for feature in data["features"]:
         properties["ra_mrr_height"] = None
         properties["ra_mrr_rotation_degrees"] = None
         properties["ra_mrr_area_sqm"] = None
-        properties["ra_mrr_rectangularity"] = None
+        properties["ra_mrr_area_ratio"] = None
+        properties["ra_rectangularity"] = None
         properties["ra_mrr_original_ratio"] = None
         continue
 
@@ -220,13 +221,22 @@ for feature in data["features"]:
     mrr_area = mrr.area
     properties["ra_mrr_area_sqm"] = mrr_area
 
-    # Rectangularity: ratio of concave hull area to MRR area
+    # Area ratio: ratio of concave hull area to MRR area
     ch_area = concave_hull_proj.area
     if mrr_area > 0:
-        rectangularity = ch_area / mrr_area
-        properties["ra_mrr_rectangularity"] = rectangularity
+        area_ratio = ch_area / mrr_area
+        properties["ra_mrr_area_ratio"] = area_ratio
+
+        # Normalized rectangularity score (0-1, where 1 is most rectangular)
+        # If ratio is 0-1, keep as is; if > 1, take inverse
+        if area_ratio <= 1:
+            rectangularity = area_ratio
+        else:
+            rectangularity = 1 / area_ratio
+        properties["ra_rectangularity"] = rectangularity
     else:
-        properties["ra_mrr_rectangularity"] = None
+        properties["ra_mrr_area_ratio"] = None
+        properties["ra_rectangularity"] = None
 
     # Ratio of original multipolygon area to MRR area
     original_area = properties.get("area_sqm")
@@ -242,7 +252,8 @@ print(f"    - ra_mrr_width: Width of MRR in meters (longer edge)")
 print(f"    - ra_mrr_height: Height of MRR in meters (shorter edge)")
 print(f"    - ra_mrr_rotation_degrees: Rotation angle in degrees [0, 180)")
 print(f"    - ra_mrr_area_sqm: Area of MRR in square meters")
-print(f"    - ra_mrr_rectangularity: Ratio of concave hull area to MRR area")
+print(f"    - ra_mrr_area_ratio: Ratio of concave hull area to MRR area")
+print(f"    - ra_rectangularity: Normalized rectangularity score (0-1, 1=rectangular)")
 print(f"    - ra_mrr_original_ratio: Ratio of original area to MRR area")
 
 # MARK: Triangularity Analysis - Douglas-Peucker Simplification
@@ -259,6 +270,7 @@ for feature in data["features"]:
         properties["ta_triangle_vertices"] = None
         properties["ta_triangle_area_sqm"] = None
         properties["ta_triangle_perimeter_m"] = None
+        properties["ta_triangle_area_ratio"] = None
         properties["ta_triangularity"] = None
         properties["ta_dp_tolerance"] = None
         properties["ta_triangle_edge_lengths"] = None
@@ -331,6 +343,7 @@ for feature in data["features"]:
         properties["ta_triangle_vertices"] = None
         properties["ta_triangle_area_sqm"] = None
         properties["ta_triangle_perimeter_m"] = None
+        properties["ta_triangle_area_ratio"] = None
         properties["ta_triangularity"] = None
         properties["ta_dp_tolerance"] = None
         properties["ta_triangle_edge_lengths"] = None
@@ -362,12 +375,21 @@ for feature in data["features"]:
     properties["ta_triangle_area_sqm"] = triangle_area
     properties["ta_triangle_perimeter_m"] = triangle_perimeter
 
-    # Triangularity: ratio of concave hull area to triangle area
+    # Area ratio: ratio of concave hull area to triangle area
     ch_area = concave_hull_proj.area
     if triangle_area > 0:
-        triangularity = ch_area / triangle_area
+        area_ratio = ch_area / triangle_area
+        properties["ta_triangle_area_ratio"] = area_ratio
+
+        # Normalized triangularity score (0-1, where 1 is most triangular)
+        # If ratio is 0-1, keep as is; if > 1, take inverse
+        if area_ratio <= 1:
+            triangularity = area_ratio
+        else:
+            triangularity = 1 / area_ratio
         properties["ta_triangularity"] = triangularity
     else:
+        properties["ta_triangle_area_ratio"] = None
         properties["ta_triangularity"] = None
 
     # Calculate edge lengths
@@ -402,7 +424,8 @@ print(f"    - ta_triangle_vertices: Vertices of simplified triangle (WGS84)")
 print(f"    - ta_triangle_num_vertices: Number of vertices in simplified polygon")
 print(f"    - ta_triangle_area_sqm: Area of triangle in square meters")
 print(f"    - ta_triangle_perimeter_m: Perimeter of triangle in meters")
-print(f"    - ta_triangularity: Ratio of concave hull area to triangle area")
+print(f"    - ta_triangle_area_ratio: Ratio of concave hull area to triangle area")
+print(f"    - ta_triangularity: Normalized triangularity score (0-1, 1=triangular)")
 print(f"    - ta_dp_tolerance: Douglas-Peucker tolerance used for simplification")
 print(f"    - ta_triangle_edge_lengths: Lengths of the triangle edges (m)")
 print(f"    - ta_triangle_regularity: Ratio of shortest to longest edge")
