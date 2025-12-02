@@ -436,4 +436,51 @@ with open(OUTPUT_DATA_FILE, "w") as f:
     json.dump(data, f)
 
 print(f"Saved to: {OUTPUT_DATA_FILE}")
+
+# MARK: Generate Triangle Geometry GeoJSON
+
+print("\nGenerating triangle geometry GeoJSON...")
+
+# Create a new GeoJSON with triangle geometries
+triangle_data = {"type": "FeatureCollection", "features": []}
+
+for feature in data["features"]:
+    properties = feature["properties"]
+
+    # Get the triangle vertices
+    triangle_vertices = properties.get("ta_triangle_vertices")
+
+    if triangle_vertices and len(triangle_vertices) >= 3:
+        # Create a new feature with the triangle as the geometry
+        triangle_feature = {
+            "type": "Feature",
+            "properties": properties.copy(),  # Copy all properties
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    triangle_vertices + [triangle_vertices[0]]  # Close the polygon
+                ],
+            },
+        }
+        triangle_data["features"].append(triangle_feature)
+    else:
+        # Include features without triangles but with null geometry
+        null_feature = {
+            "type": "Feature",
+            "properties": properties.copy(),
+            "geometry": None,
+        }
+        triangle_data["features"].append(null_feature)
+
+# Save the triangle geometry GeoJSON
+TRIANGLE_OUTPUT_FILE = "./output_data/2a_parks_triangles_geometry.geojson"
+with open(TRIANGLE_OUTPUT_FILE, "w") as f:
+    json.dump(triangle_data, f)
+
+print(f"Saved triangle geometries to: {TRIANGLE_OUTPUT_FILE}")
+print(f"  Total features: {len(triangle_data['features'])}")
+print(
+    f"  Features with triangles: {sum(1 for f in triangle_data['features'] if f['geometry'] is not None)}"
+)
+
 print("\nDone!")
