@@ -7,6 +7,10 @@ requires-python = ">=3.12"
 dependencies = [
     "geopandas>=1.1.1",
     "matplotlib>=3.10.7",
+    "mercantile>=1.2.1",
+    "pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
     "rich>=14.2.0",
     "scipy>=1.16.2",
     "shapely>=2.1.2",
