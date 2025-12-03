@@ -14,4 +14,6 @@ dependencies = [
     "rich>=14.2.0",
     "scipy>=1.16.2",
     "shapely>=2.1.2",
+    "tenacity>=8.0.0",
+    "textdistance>=4.0.0",
 ]

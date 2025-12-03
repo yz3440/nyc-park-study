@@ -56,9 +56,9 @@ Some of the polygon for the small parks are very poorly defined in a few differe
 Here's some examples:
 
 - ![Original Polygon of Sgt. Joyce Kilmer Square](./assets/sgt-joyce-kilmer-square-original-polygon.jpeg)
-  This polygon is too small and not detailed enough for the east side of the park.
+  Sgt. Joyce Kilmer Square: This polygon is too small and not detailed enough for the east side of the park.
 - ![Original Polygon of Ascenzi Square](./assets/ascenzi-square-original-polygon.jpeg)
-  This polygon also doesn't fit the actual park.
+  Ascenzi Square: This polygon also doesn't fit the actual park.
 
 These problems mostly happen to the small parks, and I handpicked a list of parks to fix from the smallest 50 parks.
 
@@ -77,7 +77,6 @@ Here's a list of parks
 | row-mp7m-uyq3.tvje | Catholic War Veterans Square           | Rockaway Blvd. 116 Ave., 122 St.               |
 | row-2hxt-3ruf-b3wk | O'Sullivan Plaza                       | Astoria Blvd., 25 Ave., 88 St.                 |
 | row-yx4a~97r8.a7xt | Alben Square                           | 46 St., 11 Ave., New Utrecht Ave.              |
-| row-uc2w-uxpe-wc7i | Park                                   | Grand Ave. bet. Putnam Ave. and Fulton St.     |
 | row-nzjh~3md4-m5su | Metro Triangle                         | 125 St., 85 Ave., Metropolitan Ave.            |
 | row-apz9_cx2f_g9fu | Myrtle Ave., Cypress Ave., Putnam Ave. | Myrtle Ave., Cypress Ave., Putnam Ave.         |
 | row-gika_59qa~36pe | Grant Gore                             | Bedford Ave., Rodgers Ave., Bergen St.         |
@@ -87,4 +86,24 @@ Here's a list of parks
 | row-nebb~ym7k-iyx3 | Fleetwood Triangle                     | Woodhaven Blvd., 63 Dr., Penelope Ave.         |
 | row-g9bt-xgu8-t2i8 | Ascenzi Square                         | Metropolitan Ave., N 4 St., and Roebling St.   |
 
-The way I'm fixing it is to leverage OSM data through the Overpass API to get "park" elements close to the original park polygon and find the polygon with most overlap with the original park polygon as the new polygon.
+The way I'm fixing it is to leverage OSM data through the Overpass API to get "park" elements close to the original park polygon and find the polygon with most overlap with the original park polygon as the new polygon. To be honest, I had to manually contribute to the OSM data for some obscure parks like (Jacob Riis Triangle, a tiny triangle by the Jacob Riis Playground).
+
+To run the script to fix the parks, run the following command:
+
+```bash
+uv run source_data/0_fix_small_parks.py
+```
+
+This generates a `small_parks_modified.geojson` file in the `source_data/` directory for later merging with the original data.
+
+The script will output the modified parks to the `small_parks_modified.geojson` file.
+
+Here's some examples of the modified parks:
+
+- ![Sgt. Joyce Kilmer Square Modified Polygon](./assets/sgt-joyce-kilmer-square-original-polygon-modified.jpeg)
+  This is the modified polygon for Sgt. Joyce Kilmer Square. It's a bit off from the original polygon, but it's still a good approximation of the actual park.
+
+- ![Ascenzi Square Modified Polygon](./assets/ascenzi-square-original-polygon-modified.jpeg)
+  This is the modified polygon for Ascenzi Square. It's a bit off from the original polygon, but it's still a good approximation of the actual park.
+
+## Merging the modified parks with the original data
