@@ -8,7 +8,7 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-SOURCE_DATA_FILE = "./source_data/Parks_Properties_20251021_modified.geojson"
+SOURCE_DATA_FILE = "./source_data/Parks_Properties_20251119_modified.geojson"
 
 DIVIDER_STR = "[bold yellow]═" * 40 + "[/bold yellow]"
 

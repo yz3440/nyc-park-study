@@ -1,6 +1,6 @@
 # Data
 
-The data is sourced from [Parks Properties - NYC Open Data](https://nycopendata.socrata.com/Recreation/Parks-Properties/enfh-gkve/about_data), updated on Oct 20, 2025 and accessed on Oct 21, 2025.
+The data is sourced from [Parks Properties - NYC Open Data](https://nycopendata.socrata.com/Recreation/Parks-Properties/enfh-gkve/about_data), updated on Nov 19, 2025 and accessed on Dec 2, 2025.
 
 ## Data Description
 
@@ -25,11 +25,11 @@ Here's an excerpt from the dataset description:
 This repository contains the following source data files:
 
 - Original data file:
-  - [Parks_Properties_20251021.geojson](./Parks_Properties_20251021.geojson)
+  - [Parks_Properties_20251119.geojson](./Parks_Properties_20251119.geojson)
 - Modified individual property files:
   - [meredith_woods_modified.geojson](./meredith_woods_modified.geojson)
 - Modified overall data file:
-  - [Parks_Properties_20251021_modified.geojson](./Parks_Properties_20251021_modified.geojson)
+  - [Parks_Properties_20251119_modified.geojson](./Parks_Properties_20251119_modified.geojson)
 
 ## Modifications Notes
 
