@@ -23,6 +23,10 @@ import mercantile
 import numpy as np
 import geopandas as gpd
 from PIL import Image, ImageDraw, ImageColor
+
+# Increase PIL's max pixel limit for large parks (default ~178M pixels)
+# Safe since we're processing known data, not untrusted uploads
+Image.MAX_IMAGE_PIXELS = 1_000_000_000  # 1 billion pixels
 from io import BytesIO
 from shapely.geometry import shape, box, Polygon, MultiPolygon
 from shapely.ops import transform
@@ -32,13 +36,20 @@ from rich.console import Console
 from rich.progress import track
 from dotenv import load_dotenv
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 # ==============================================================================
 # CONFIGURATION CONSTANTS
 # ==============================================================================
 
 # Satellite imagery settings
-ZOOM_LEVEL = 19  # Zoom level for satellite imagery (1-22, higher = more detail)
+ZOOM_LEVEL = 20  # Zoom level for satellite imagery (1-22, higher = more detail) [18 for testing, 20 for production]
 TILE_SIZE = 256  # Standard tile size in pixels
 
 # Padding around park boundaries
@@ -62,6 +73,12 @@ CONCAVE_HULL_JOINT_SCALE = 0.5  # Ratio of joint circle diameter to stroke width
 
 # JPEG quality setting
 JPEG_QUALITY = 95  # JPEG quality (1-100, higher = better quality)
+
+# Parallel download settings
+MAX_TILE_WORKERS = 32  # Number of parallel threads for downloading tiles
+TILE_RETRY_ATTEMPTS = 5  # Number of retry attempts for failed tile downloads
+TILE_RETRY_MIN_WAIT = 1  # Minimum wait time between retries (seconds)
+TILE_RETRY_MAX_WAIT = 30  # Maximum wait time between retries (seconds)
 
 # Processing options
 SKIP_EXISTING = True  # Skip parks that already have images
@@ -537,25 +554,56 @@ def download_and_stitch_tiles(bbox, zoom, park_name, park_dir, skip_existing=Tru
         + MAPBOX_ACCESS_TOKEN
     )
 
-    # Download and paste each tile
-    for tile in tiles:
+    @retry(
+        stop=stop_after_attempt(TILE_RETRY_ATTEMPTS),
+        wait=wait_exponential(
+            multiplier=1, min=TILE_RETRY_MIN_WAIT, max=TILE_RETRY_MAX_WAIT
+        ),
+        retry=retry_if_exception_type((requests.RequestException, IOError)),
+        reraise=True,
+    )
+    def download_tile_with_retry(tile):
+        """Download a single tile with retry logic. Raises exception on failure."""
         url = tile_url_template.format(z=tile.z, x=tile.x, y=tile.y)
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return (tile, response.content)
 
+    def download_tile(tile):
+        """Download a single tile, return (tile, image_data) or (tile, None, error_msg) on failure"""
         try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            img = Image.open(BytesIO(response.content))
-
-            # Calculate position in full image
-            x_offset = (tile.x - x_min) * TILE_SIZE
-            y_offset = (tile.y - y_min) * TILE_SIZE
-
-            full_img.paste(img, (x_offset, y_offset))
+            return download_tile_with_retry(tile)
         except Exception as e:
+            return (tile, None, str(e))
+
+    # Download tiles in parallel
+    tile_results = []
+    with ThreadPoolExecutor(max_workers=MAX_TILE_WORKERS) as executor:
+        futures = {executor.submit(download_tile, tile): tile for tile in tiles}
+        for future in as_completed(futures):
+            tile_results.append(future.result())
+
+    # Check for any failed tiles - if any failed, abort without stitching
+    failed_tiles = [r for r in tile_results if len(r) == 3]
+    if failed_tiles:
+        for tile, _, error_msg in failed_tiles:
             console.print(
-                f"[red]Error downloading tile {tile.x},{tile.y} for {park_name}: {e}[/red]"
+                f"[red]Failed to download tile {tile.x},{tile.y} for {park_name} after {TILE_RETRY_ATTEMPTS} retries: {error_msg}[/red]"
             )
-            # Continue with other tiles even if one fails
+        console.print(
+            f"[red]✗ Skipping {park_name} due to {len(failed_tiles)} failed tile(s)[/red]"
+        )
+        return None
+
+    # All tiles downloaded successfully - paste them onto the full image
+    for tile, image_data in tile_results:
+        img = Image.open(BytesIO(image_data))
+
+        # Calculate position in full image
+        x_offset = (tile.x - x_min) * TILE_SIZE
+        y_offset = (tile.y - y_min) * TILE_SIZE
+
+        full_img.paste(img, (x_offset, y_offset))
 
     # Now crop to the exact bounding box
     # Convert lat/lon bbox to pixel coordinates within the full image
@@ -589,6 +637,9 @@ def download_and_stitch_tiles(bbox, zoom, park_name, park_dir, skip_existing=Tru
     # Convert to RGB if needed (JPEG doesn't support RGBA)
     if cropped_img.mode == "RGBA":
         cropped_img = cropped_img.convert("RGB")
+
+    # Create park directory only when we're about to save (avoids empty folders on termination)
+    park_dir.mkdir(exist_ok=True)
 
     # Save the cropped image as high-quality JPEG
     width, height = cropped_img.size
@@ -880,9 +931,8 @@ def main():
         # Format the filename
         park_name = format_park_name(park_id, name311)
 
-        # Create park-specific directory
+        # Define park-specific directory (don't create yet - wait until download succeeds)
         park_dir = OUTPUT_DIR / park_name
-        park_dir.mkdir(exist_ok=True)
 
         # Check if file already exists
         output_path = park_dir / f"{park_name}.jpg"
