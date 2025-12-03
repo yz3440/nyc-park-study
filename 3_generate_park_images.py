@@ -22,7 +22,7 @@ import requests
 import mercantile
 import numpy as np
 import geopandas as gpd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageColor
 from io import BytesIO
 from shapely.geometry import shape, box, Polygon, MultiPolygon
 from shapely.ops import transform
@@ -38,7 +38,7 @@ from pathlib import Path
 # ==============================================================================
 
 # Satellite imagery settings
-ZOOM_LEVEL = 18  # Zoom level for satellite imagery (1-22, higher = more detail)
+ZOOM_LEVEL = 19  # Zoom level for satellite imagery (1-22, higher = more detail)
 TILE_SIZE = 256  # Standard tile size in pixels
 
 # Padding around park boundaries
@@ -49,7 +49,16 @@ PADDING_TYPE = "meters"  # Either "meters" or "percent"
 GENERATE_OVERLAY = (
     True  # Whether to generate transparent overlays (combined only, no separate mask)
 )
-OVERLAY_OPACITY = 100  # Opacity of white overlay (0-255, 0=transparent, 255=opaque)
+
+# Mask settings (area outside the park)
+MASK_OVERLAY_COLOR = "#FFFFFF"  # Hex color for the surrounding area
+MASK_OVERLAY_OPACITY = 100  # 0-255
+
+# Concave hull stroke settings
+CONCAVE_HULL_STROKE_COLOR = "#000000"
+CONCAVE_HULL_STROKE_WIDTH = 5
+CONCAVE_HULL_STROKE_OPACITY = 200  # 0-255
+CONCAVE_HULL_JOINT_SCALE = 0.5  # Ratio of joint circle diameter to stroke width
 
 # JPEG quality setting
 JPEG_QUALITY = 95  # JPEG quality (1-100, higher = better quality)
@@ -83,9 +92,15 @@ def validate_settings():
         )
         sys.exit(1)
 
-    if not 0 <= OVERLAY_OPACITY <= 255:
+    if not 0 <= MASK_OVERLAY_OPACITY <= 255:
         console.print(
-            f"[bold red]Error: OVERLAY_OPACITY must be between 0 and 255 (got {OVERLAY_OPACITY})[/bold red]"
+            f"[bold red]Error: MASK_OVERLAY_OPACITY must be between 0 and 255 (got {MASK_OVERLAY_OPACITY})[/bold red]"
+        )
+        sys.exit(1)
+
+    if not 0 <= CONCAVE_HULL_STROKE_OPACITY <= 255:
+        console.print(
+            f"[bold red]Error: CONCAVE_HULL_STROKE_OPACITY must be between 0 and 255 (got {CONCAVE_HULL_STROKE_OPACITY})[/bold red]"
         )
         sys.exit(1)
 
@@ -218,6 +233,44 @@ def expand_bbox(bbox, padding, padding_type="meters"):
             east + lon_padding,
             north + lat_padding,
         )
+
+
+def make_bbox_square(bbox):
+    """
+    Make a bounding box square by expanding the shorter edge to match the longer edge.
+    The expansion is centered so the original content remains in the middle.
+
+    bbox: (west, south, east, north) in WGS84
+    Returns: (west, south, east, north) in WGS84
+    """
+    west, south, east, north = bbox
+
+    # Calculate current dimensions in meters
+    width_meters, height_meters = calculate_bbox_dimensions_meters(bbox)
+
+    if abs(width_meters - height_meters) < 0.01:  # Already square (within 1cm)
+        return bbox
+
+    # Calculate center point
+    center_lat = (north + south) / 2
+    center_lon = (east + west) / 2
+
+    if width_meters < height_meters:
+        # Need to expand width to match height
+        diff_meters = (height_meters - width_meters) / 2
+        # Convert meters to degrees longitude at this latitude
+        lon_expand = diff_meters / (111320.0 * abs(math.cos(math.radians(center_lat))))
+        west -= lon_expand
+        east += lon_expand
+    else:
+        # Need to expand height to match width
+        diff_meters = (width_meters - height_meters) / 2
+        # Convert meters to degrees latitude
+        lat_expand = diff_meters / 111320.0
+        south -= lat_expand
+        north += lat_expand
+
+    return (west, south, east, north)
 
 
 def get_convex_hull_bbox(geometry):
@@ -598,7 +651,9 @@ def geometry_to_pixel_coords(geometry, bbox, img_width, img_height):
         return []
 
 
-def create_park_overlay(park_name, concave_hull, bbox, park_dir):
+def create_park_overlay(
+    park_name, park_geometry, concave_hull_geometry, bbox, park_dir
+):
     """Create an overlay image with transparent park area and white overlay outside"""
 
     # Check if satellite image exists
@@ -617,15 +672,16 @@ def create_park_overlay(park_name, concave_hull, bbox, park_dir):
     overlay_img = Image.new("RGBA", (img_width, img_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay_img)
 
-    # First, fill the entire image with semi-transparent white
-    draw.rectangle(
-        [(0, 0), (img_width, img_height)], fill=(255, 255, 255, OVERLAY_OPACITY)
+    # First, fill the entire image with the mask color
+    mask_rgb = ImageColor.getrgb(MASK_OVERLAY_COLOR)
+    draw.rectangle([(0, 0), (img_width, img_height)], fill=mask_rgb + (255,))
+
+    # Convert park geometry to pixel coordinates (using extract_geometry_vertices_pixels for correct hole handling)
+    park_polygons = extract_geometry_vertices_pixels(
+        park_geometry, bbox, img_width, img_height
     )
 
-    # Convert concave hull to pixel coordinates (now using image dimensions directly)
-    pixel_coords = geometry_to_pixel_coords(concave_hull, bbox, img_width, img_height)
-
-    if not pixel_coords:
+    if not park_polygons:
         console.print(
             f"[red]Could not convert geometry to pixels for {park_name}[/red]"
         )
@@ -635,21 +691,89 @@ def create_park_overlay(park_name, concave_hull, bbox, park_dir):
     mask = Image.new("L", (img_width, img_height), 0)
     mask_draw = ImageDraw.Draw(mask)
 
-    # Draw the park area on the mask (handle multiple polygons)
-    for coords in pixel_coords:
-        if len(coords) >= 3:  # Need at least 3 points for a polygon
-            mask_draw.polygon(coords, fill=255)
+    # Draw the park area on the mask (handle multiple polygons with holes)
+    for poly in park_polygons:
+        # Draw exterior (white)
+        ext_coords = [tuple(p) for p in poly["exterior"]]
+        if len(ext_coords) >= 3:
+            mask_draw.polygon(ext_coords, fill=255)
+
+        # Draw interiors/holes (black)
+        for hole in poly["interiors"]:
+            hole_coords = [tuple(p) for p in hole]
+            if len(hole_coords) >= 3:
+                mask_draw.polygon(hole_coords, fill=0)
 
     # Apply the mask to make the park area transparent
+    # Where mask is 255 (park), alpha becomes 0
+    # Where mask is 0 (outside), alpha becomes MASK_OVERLAY_OPACITY
     overlay_img.putalpha(
         Image.composite(
             Image.new("L", (img_width, img_height), 0),  # Transparent for park area
             Image.new(
-                "L", (img_width, img_height), OVERLAY_OPACITY
-            ),  # Opaque for outside
+                "L", (img_width, img_height), MASK_OVERLAY_OPACITY
+            ),  # Semi-transparent for outside
             mask,
         )
     )
+
+    # Draw concave hull stroke on top
+    if concave_hull_geometry:
+        hull_polygons = extract_geometry_vertices_pixels(
+            concave_hull_geometry, bbox, img_width, img_height
+        )
+
+        if hull_polygons:
+            stroke_rgb = ImageColor.getrgb(CONCAVE_HULL_STROKE_COLOR)
+            stroke_rgba = stroke_rgb + (CONCAVE_HULL_STROKE_OPACITY,)
+
+            draw = ImageDraw.Draw(overlay_img)
+
+            # Calculate joint radius
+            joint_radius = (CONCAVE_HULL_STROKE_WIDTH * CONCAVE_HULL_JOINT_SCALE) / 2.0
+
+            for poly in hull_polygons:
+                # Draw exterior stroke
+                ext_coords = [tuple(p) for p in poly["exterior"]]
+                if len(ext_coords) >= 2:
+                    # Close loop if needed
+                    if ext_coords[0] != ext_coords[-1]:
+                        ext_coords.append(ext_coords[0])
+                    draw.line(
+                        ext_coords, fill=stroke_rgba, width=CONCAVE_HULL_STROKE_WIDTH
+                    )
+
+                    # Draw joints at each vertex
+                    for x, y in ext_coords:
+                        draw.ellipse(
+                            [
+                                (x - joint_radius, y - joint_radius),
+                                (x + joint_radius, y + joint_radius),
+                            ],
+                            fill=stroke_rgba,
+                        )
+
+                # Draw interior strokes if desired
+                for hole in poly["interiors"]:
+                    hole_coords = [tuple(p) for p in hole]
+                    if len(hole_coords) >= 2:
+                        if hole_coords[0] != hole_coords[-1]:
+                            hole_coords.append(hole_coords[0])
+                        draw.line(
+                            hole_coords,
+                            fill=stroke_rgba,
+                            width=CONCAVE_HULL_STROKE_WIDTH,
+                        )
+
+                        # Draw joints at each vertex
+                        for x, y in hole_coords:
+                            draw.ellipse(
+                                [
+                                    (x - joint_radius, y - joint_radius),
+                                    (x + joint_radius, y + joint_radius),
+                                ],
+                                fill=stroke_rgba,
+                            )
 
     return overlay_img
 
@@ -698,7 +822,7 @@ def main():
 
     if GENERATE_OVERLAY:
         console.print(
-            f"  Combined images: ENABLED (overlay opacity: {OVERLAY_OPACITY}/255)"
+            f"  Combined images: ENABLED (mask opacity: {MASK_OVERLAY_OPACITY}/255, stroke opacity: {CONCAVE_HULL_STROKE_OPACITY}/255)"
         )
     else:
         console.print(f"  Combined images: DISABLED")
@@ -722,10 +846,15 @@ def main():
         f"[green]Found {len(valid_parks)} valid parks out of {len(gdf)} total[/green]"
     )
 
+    # Sort by area (smallest first)
+    valid_parks = valid_parks.sort_values("area_sqm", ascending=True)
+
     # Apply limit if specified
     if LIMIT_PARKS:
         valid_parks = valid_parks.head(LIMIT_PARKS)
-        console.print(f"[yellow]Processing only first {LIMIT_PARKS} parks[/yellow]")
+        console.print(
+            f"[yellow]Processing only first {LIMIT_PARKS} smallest parks[/yellow]"
+        )
 
     # Process each park
     if DRY_RUN:
@@ -769,9 +898,14 @@ def main():
                         padded_bbox = expand_bbox(
                             original_bbox, PADDING_VALUE, PADDING_TYPE
                         )
+                        padded_bbox = make_bbox_square(padded_bbox)
                         try:
                             overlay_img = create_park_overlay(
-                                park_name, concave_hull, padded_bbox, park_dir
+                                park_name,
+                                park.geometry,
+                                concave_hull,
+                                padded_bbox,
+                                park_dir,
                             )
                             if overlay_img:
                                 # Create combined image directly without saving overlay
@@ -815,8 +949,9 @@ def main():
             error_count += 1
             continue
 
-        # Apply padding to the bounding box
+        # Apply padding to the bounding box and make it square
         padded_bbox = expand_bbox(original_bbox, PADDING_VALUE, PADDING_TYPE)
+        padded_bbox = make_bbox_square(padded_bbox)
 
         # In dry-run mode, just count tiles
         if DRY_RUN:
@@ -850,7 +985,11 @@ def main():
                     if concave_hull and not concave_hull.is_empty:
                         try:
                             overlay_img = create_park_overlay(
-                                park_name, concave_hull, padded_bbox, park_dir
+                                park_name,
+                                park.geometry,
+                                concave_hull,
+                                padded_bbox,
+                                park_dir,
                             )
                             if overlay_img:
                                 # Create combined image directly without saving overlay
