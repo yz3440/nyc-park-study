@@ -66,6 +66,7 @@ PARKS_TO_FIX = [
     "row-vg2j.x4qa~ptrw",
     "row-cyyp-hhy5_29nw",
     "row-u7te.txxg~gmk3",
+    "row-cyti~ha2g-pmg7",
 ]
 
 # Bounding box expansion in meters
