@@ -44,3 +44,47 @@ For the property "Meredith Woods" (id: `row-7wny_yxwp-rx4m`, Staten Island), the
 So I deleted the 8 polygons that don't resemble the actual park. Here's the [modified geojson for "Meredith Woods" property](./meredith_woods_fixed.geojson).
 
 ![Meredith Woods Fixed Polygons](./assets/meredith-woods-original-multipolygon-modified.jpeg)
+
+### Specific Small Parks
+
+Some of the polygon for the small parks are very poorly defined in a few different ways:
+
+- The polygon is a lot smaller than the actual park.
+- The polygon is missing details for curved edges.
+- The polygon is misaligned with the actual park.
+
+Here's some examples:
+
+- ![Original Polygon of Sgt. Joyce Kilmer Square](./assets/sgt-joyce-kilmer-square-original-polygon.jpeg)
+  This polygon is too small and not detailed enough for the east side of the park.
+- ![Original Polygon of Ascenzi Square](./assets/ascenzi-square-original-polygon.jpeg)
+  This polygon also doesn't fit the actual park.
+
+These problems mostly happen to the small parks, and I handpicked a list of parks to fix from the smallest 50 parks.
+
+Here's a list of parks
+
+| :id                | name311                                | location                                       |
+| ------------------ | -------------------------------------- | ---------------------------------------------- |
+| row-rbs7.wef6.wevd | Sgt. Joyce Kilmer Square               | E. 12 St., Kings Hwy., Quentin Rd.             |
+| row-9kkg.gehr~dasq | Luke J. Lang Square                    | Fresh Pond Rd., 59 Rd. and 61 St.              |
+| row-mnek_ivw9_7zuh | Middleburgh Triangle                   | Corona Ave., 90 St., 48 Ave.                   |
+| row-8ttk-59ga.xbt7 | Dwyer Square                           | Northern Blvd., 34 Ave. bet. 47 St. and 48 St. |
+| row-4zsg-7ji2.pm6w | Dunningham Triangle                    | 82 St., Ithaca St., Baxter Ave.                |
+| row-jd95_dw66-vbrq | Corporal Frank F. Fagan Sq.            | 48 St., Newtown Rd., Broadway                  |
+| row-8ni5.z4dn.nij8 | Freedom Triangle                       | Bushwick Ave., Myrtle Ave., Willoughby Ave.    |
+| row-2km6.y89y~pv89 | Fowler Square                          | Fulton St., S Elliot Pl., and Lafayette Ave.   |
+| row-mp7m-uyq3.tvje | Catholic War Veterans Square           | Rockaway Blvd. 116 Ave., 122 St.               |
+| row-2hxt-3ruf-b3wk | O'Sullivan Plaza                       | Astoria Blvd., 25 Ave., 88 St.                 |
+| row-yx4a~97r8.a7xt | Alben Square                           | 46 St., 11 Ave., New Utrecht Ave.              |
+| row-uc2w-uxpe-wc7i | Park                                   | Grand Ave. bet. Putnam Ave. and Fulton St.     |
+| row-nzjh~3md4-m5su | Metro Triangle                         | 125 St., 85 Ave., Metropolitan Ave.            |
+| row-apz9_cx2f_g9fu | Myrtle Ave., Cypress Ave., Putnam Ave. | Myrtle Ave., Cypress Ave., Putnam Ave.         |
+| row-gika_59qa~36pe | Grant Gore                             | Bedford Ave., Rodgers Ave., Bergen St.         |
+| row-vd76-qn8k_asmy | Woodrow Wilson Triangle                | Soundview Ave., Underhill Ave., Patterson Ave. |
+| row-5ptx.dtp6-spm9 | Horsebrook Island                      | Justice Ave., 90 St., 56 Ave.                  |
+| row-tewt.g6s5.hszk | Jacob Riis Triangle                    | Bessemer St., 116 St., 85 Ave.                 |
+| row-nebb~ym7k-iyx3 | Fleetwood Triangle                     | Woodhaven Blvd., 63 Dr., Penelope Ave.         |
+| row-g9bt-xgu8-t2i8 | Ascenzi Square                         | Metropolitan Ave., N 4 St., and Roebling St.   |
+
+The way I'm fixing it is to leverage OSM data through the Overpass API to get "park" elements close to the original park polygon and find the polygon with most overlap with the original park polygon as the new polygon.
