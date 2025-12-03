@@ -79,4 +79,14 @@ Create concave hulls for the parks dataset. It's written in C++ to utilize the `
 make run
 ```
 
-### `1b_concave_hull_analysis.py`
+### `2a_concave_hull_analysis.py`
+
+```bash
+uv run 2a_concave_hull_analysis.py
+```
+
+### `3_generate_park_images.py`
+
+```bash
+uv run 3_generate_park_images.py
+```

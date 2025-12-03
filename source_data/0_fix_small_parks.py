@@ -61,6 +61,11 @@ PARKS_TO_FIX = [
     "row-tewt.g6s5.hszk",  # Jacob Riis Triangle
     "row-nebb~ym7k-iyx3",  # Fleetwood Triangle
     "row-g9bt-xgu8-t2i8",  # Ascenzi Square
+    "row-ugix_fjq9-jf6g",  # TODO: ADD TO DOCS
+    "row-teye-5c89-najb",
+    "row-vg2j.x4qa~ptrw",
+    "row-cyyp-hhy5_29nw",
+    "row-u7te.txxg~gmk3",
 ]
 
 # Bounding box expansion in meters
@@ -558,11 +563,35 @@ def main():
     gdf = gpd.read_file(SOURCE_DATA_FILE)
     console.print(f"[green]Loaded {len(gdf)} parks[/green]\n")
 
+    # Load existing modifications if available
+    existing_modified = {}
+    already_processed_ids = set()
+    if OUTPUT_FILE.exists():
+        console.print(
+            f"[cyan]Loading existing modifications from:[/cyan] {OUTPUT_FILE}"
+        )
+        existing_gdf = gpd.read_file(OUTPUT_FILE)
+        for _, row in existing_gdf.iterrows():
+            park_id = row[":id"]
+            existing_modified[park_id] = row.to_dict()
+            already_processed_ids.add(park_id)
+        console.print(
+            f"[green]Found {len(already_processed_ids)} already processed parks[/green]\n"
+        )
+
     # Filter to parks we want to fix
     parks_to_fix = gdf[gdf[":id"].isin(PARKS_TO_FIX)].copy()
     console.print(
-        f"[cyan]Found {len(parks_to_fix)} parks to fix out of {len(PARKS_TO_FIX)} specified[/cyan]\n"
+        f"[cyan]Found {len(parks_to_fix)} parks to fix out of {len(PARKS_TO_FIX)} specified[/cyan]"
     )
+
+    # Filter out already processed parks
+    parks_to_process = parks_to_fix[~parks_to_fix[":id"].isin(already_processed_ids)]
+    if len(already_processed_ids) > 0:
+        console.print(
+            f"[dim]Skipping {len(already_processed_ids)} already processed parks[/dim]"
+        )
+    console.print(f"[cyan]Will process {len(parks_to_process)} new parks[/cyan]\n")
 
     if len(parks_to_fix) < len(PARKS_TO_FIX):
         missing = set(PARKS_TO_FIX) - set(parks_to_fix[":id"])
@@ -570,47 +599,62 @@ def main():
 
     # Results tracking
     results = []
-    modified_parks = []
+    modified_parks = list(existing_modified.values())  # Start with existing
 
-    # Process each park
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        for idx, (_, park_row) in enumerate(parks_to_fix.iterrows()):
-            park_id = park_row[":id"]
-            park_name = park_row.get("name311", park_row.get("signname", "Unknown"))
+    # Add results for already processed parks
+    for park_id in already_processed_ids:
+        park_data = existing_modified[park_id]
+        results.append(
+            {
+                "park_id": park_id,
+                "park_name": park_data.get(
+                    "name311", park_data.get("signname", "Unknown")
+                ),
+                "success": True,
+                "message": "(already processed)",
+            }
+        )
 
-            task = progress.add_task(f"Processing: {park_name[:40]}...", total=None)
+    # Process each new park
+    if len(parks_to_process) > 0:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            for idx, (_, park_row) in enumerate(parks_to_process.iterrows()):
+                park_id = park_row[":id"]
+                park_name = park_row.get("name311", park_row.get("signname", "Unknown"))
 
-            result = fix_park(park_row, gdf)
+                task = progress.add_task(f"Processing: {park_name[:40]}...", total=None)
 
-            if result["success"] and result["new_geom"] is not None:
-                # Create modified park record
-                modified_park = park_row.to_dict()
-                modified_park["geometry"] = result["new_geom"]
-                modified_park["osm_fixed"] = True
-                modified_park["osm_fix_message"] = result["message"]
-                modified_parks.append(modified_park)
-            else:
-                # Save error log for failed parks
-                save_error_log(result, ERROR_DIR)
+                result = fix_park(park_row, gdf)
 
-            results.append(
-                {
-                    "park_id": park_id,
-                    "park_name": park_name,
-                    "success": result["success"],
-                    "message": result["message"],
-                }
-            )
+                if result["success"] and result["new_geom"] is not None:
+                    # Create modified park record
+                    modified_park = park_row.to_dict()
+                    modified_park["geometry"] = result["new_geom"]
+                    modified_park["osm_fixed"] = True
+                    modified_park["osm_fix_message"] = result["message"]
+                    modified_parks.append(modified_park)
+                else:
+                    # Save error log for failed parks
+                    save_error_log(result, ERROR_DIR)
 
-            progress.remove_task(task)
+                results.append(
+                    {
+                        "park_id": park_id,
+                        "park_name": park_name,
+                        "success": result["success"],
+                        "message": result["message"],
+                    }
+                )
 
-            # Rate limiting - be nice to Overpass API
-            if idx < len(parks_to_fix) - 1:
-                time.sleep(1)
+                progress.remove_task(task)
+
+                # Rate limiting - be nice to Overpass API
+                if idx < len(parks_to_process) - 1:
+                    time.sleep(4)
 
     # Print results table
     console.print(
@@ -629,17 +673,23 @@ def main():
     table.add_column("Message", max_width=40)
 
     for result in results:
-        status = (
-            "[green]✓ Fixed[/green]" if result["success"] else "[red]✗ Failed[/red]"
-        )
+        if result["message"] == "(already processed)":
+            status = "[dim]● Cached[/dim]"
+        elif result["success"]:
+            status = "[green]✓ Fixed[/green]"
+        else:
+            status = "[red]✗ Failed[/red]"
         table.add_row(result["park_name"][:35], status, result["message"][:40])
 
     console.print(table)
 
     # Summary
     successful = sum(1 for r in results if r["success"])
+    cached = sum(1 for r in results if r["message"] == "(already processed)")
+    newly_fixed = successful - cached
     console.print(
-        f"\n[bold]Summary:[/bold] {successful}/{len(results)} parks successfully fixed"
+        f"\n[bold]Summary:[/bold] {successful}/{len(results)} parks fixed "
+        f"({newly_fixed} new, {cached} cached)"
     )
 
     # Save output
