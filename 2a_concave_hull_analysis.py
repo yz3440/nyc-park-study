@@ -8,7 +8,7 @@ import math
 import geopandas as gpd
 import numpy as np
 from shapely import geometry
-from shapely.geometry import shape, mapping, Polygon
+from shapely.geometry import shape, mapping, Polygon, MultiPolygon
 from shapely.ops import transform
 import pyproj
 
@@ -228,12 +228,8 @@ for feature in data["features"]:
         properties["ra_mrr_area_ratio"] = area_ratio
 
         # Normalized rectangularity score (0-1, where 1 is most rectangular)
-        # If ratio is 0-1, keep as is; if > 1, take inverse
-        if area_ratio <= 1:
-            rectangularity = area_ratio
-        else:
-            rectangularity = 1 / area_ratio
-        properties["ra_rectangularity"] = rectangularity
+        # MRR always contains the shape, so ratio is always <= 1
+        properties["ra_rectangularity"] = area_ratio
     else:
         properties["ra_mrr_area_ratio"] = None
         properties["ra_rectangularity"] = None
@@ -270,7 +266,9 @@ for feature in data["features"]:
         properties["ta_triangle_vertices"] = None
         properties["ta_triangle_area_sqm"] = None
         properties["ta_triangle_perimeter_m"] = None
-        properties["ta_triangle_area_ratio"] = None
+        properties["ta_triangle_ch_area_ratio"] = None
+        properties["ta_triangle_ch_intersection_area"] = None
+        properties["ta_triangle_ch_intersection_area_ratio"] = None
         properties["ta_triangularity"] = None
         properties["ta_dp_tolerance"] = None
         properties["ta_triangle_edge_lengths"] = None
@@ -284,66 +282,148 @@ for feature in data["features"]:
     # Project to UTM for accurate metric measurements
     concave_hull_proj = transform(transformer.transform, concave_hull)
 
-    # Use binary search to find the Douglas-Peucker tolerance that gives exactly 3 vertices
-    # Start with a range of tolerances
-    min_tolerance = 0.0
-    max_tolerance = concave_hull_proj.length * 2  # Use 2x perimeter as upper bound
+    # Incremental simplification approach:
+    # Start with original polygon and small epsilon, incrementally simplify
+    # using each result as input for the next iteration
+    perimeter = concave_hull_proj.length
 
-    tolerance = 1.0  # Initial guess
-    simplified = None
-    best_simplified = None
-    best_vertex_count = float("inf")
-    max_iterations = 200
+    # Initial epsilon and increment proportional to perimeter
+    epsilon = perimeter * 0.001  # Start with 0.1% of perimeter
+    increment = perimeter * 0.001  # Initial increment
 
-    for iteration in range(max_iterations):
-        # Simplify the polygon
-        test_simplified = concave_hull_proj.simplify(tolerance, preserve_topology=False)
-
-        # Check if it's a polygon and count vertices
-        if isinstance(test_simplified, Polygon):
-            num_vertices = (
-                len(test_simplified.exterior.coords) - 1
-            )  # Exclude duplicate last point
+    # Handle MultiPolygon by extracting largest polygon
+    if isinstance(concave_hull_proj, Polygon):
+        current_polygon = concave_hull_proj
+    else:
+        # MultiPolygon - extract the largest polygon by area
+        polygons = [g for g in concave_hull_proj.geoms if isinstance(g, Polygon)]
+        if polygons:
+            current_polygon = max(polygons, key=lambda p: p.area)
         else:
-            # If simplification resulted in non-polygon, tolerance is too high
-            max_tolerance = tolerance
-            tolerance = (min_tolerance + max_tolerance) / 2
-            continue
+            current_polygon = None
 
-        # Track the best result (closest to 3 vertices)
-        if abs(num_vertices - 3) < abs(best_vertex_count - 3):
-            best_simplified = test_simplified
-            best_vertex_count = num_vertices
+    simplified = None
+    best_simplified = current_polygon
+    best_vertex_count = (
+        len(current_polygon.exterior.coords) - 1 if current_polygon else float("inf")
+    )
+    max_iterations = 400
+    final_iteration = 0
+    tolerance = epsilon  # Track cumulative tolerance for reporting
 
-        if num_vertices == 3:
-            # Found it!
-            simplified = test_simplified
-            break
-        elif num_vertices > 3:
-            # Need more simplification (higher tolerance)
-            min_tolerance = tolerance
-            tolerance = (min_tolerance + max_tolerance) / 2
-        else:  # num_vertices < 3
-            # Too much simplification (lower tolerance)
-            max_tolerance = tolerance
-            tolerance = (min_tolerance + max_tolerance) / 2
+    if current_polygon is not None:
+        num_vertices = len(current_polygon.exterior.coords) - 1
 
-        # Check if we've converged
-        if max_tolerance - min_tolerance < 0.00001:
-            # Can't achieve exactly 3 vertices, use best approximation
-            simplified = best_simplified
-            break
+        for iteration in range(max_iterations):
+            final_iteration = iteration
 
-    # If still no result, use best approximation
+            if num_vertices == 3:
+                # Found it!
+                simplified = current_polygon
+                break
+
+            if num_vertices < 3:
+                # Can't simplify further
+                break
+
+            # Simplify the current polygon (not the original!)
+            test_simplified = current_polygon.simplify(epsilon, preserve_topology=False)
+
+            # Handle result based on geometry type
+            if isinstance(test_simplified, Polygon) and not test_simplified.is_empty:
+                # Good - still a single polygon
+                result_polygon = test_simplified
+            elif isinstance(test_simplified, MultiPolygon):
+                # Polygon split into multiple parts - extract the largest one and continue
+                parts = [
+                    g
+                    for g in test_simplified.geoms
+                    if isinstance(g, Polygon) and not g.is_empty
+                ]
+                if parts:
+                    result_polygon = max(parts, key=lambda p: p.area)
+                else:
+                    # No valid parts, reduce epsilon and try again
+                    epsilon -= increment
+                    increment *= 0.5
+                    epsilon += increment
+                    if increment < 0.0001:
+                        break
+                    continue
+            else:
+                # Invalid result (empty, LineString, etc.), reduce epsilon
+                epsilon -= increment
+                increment *= 0.5
+                epsilon += increment
+                if increment < 0.0001:
+                    break
+                continue
+
+            new_num_vertices = len(result_polygon.exterior.coords) - 1
+
+            if new_num_vertices >= 3:
+                # Good simplification, use this result for next iteration
+                current_polygon = result_polygon
+                num_vertices = new_num_vertices
+                tolerance += epsilon
+                epsilon += increment
+
+                # Track best result
+                if abs(num_vertices - 3) < abs(best_vertex_count - 3):
+                    best_simplified = current_polygon
+                    best_vertex_count = num_vertices
+            else:
+                # Overshot (< 3 vertices), back off
+                epsilon -= increment
+                increment *= 0.5
+                epsilon += increment
+
+                if increment < 0.0001:
+                    # Converged, can't achieve exactly 3 vertices
+                    break
+
+    # Use best result if we didn't find exactly 3
     if simplified is None:
         simplified = best_simplified
+
+    # Handle 4-vertex case: try all 4 possible triangles and pick the best one
+    if simplified is not None and isinstance(simplified, Polygon):
+        quad_coords = list(simplified.exterior.coords)[:-1]  # Remove duplicate last
+        if len(quad_coords) == 4:
+            quad_area = simplified.area
+            best_triangle = None
+            best_ratio = 0.0  # Looking for ratio closest to 1
+
+            # Try removing each of the 4 vertices
+            for i in range(4):
+                # Create triangle by skipping vertex i
+                tri_coords = [quad_coords[j] for j in range(4) if j != i]
+                tri_coords.append(tri_coords[0])  # Close the polygon
+                triangle = Polygon(tri_coords)
+
+                if triangle.is_valid and not triangle.is_empty:
+                    tri_area = triangle.area
+                    # Calculate ratio (normalize to <= 1)
+                    if quad_area > 0:
+                        ratio = tri_area / quad_area
+                        if ratio > 1:
+                            ratio = 1 / ratio
+
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_triangle = triangle
+
+            if best_triangle is not None:
+                simplified = best_triangle
 
     if simplified is None or not isinstance(simplified, Polygon):
         # Couldn't simplify to triangle
         properties["ta_triangle_vertices"] = None
         properties["ta_triangle_area_sqm"] = None
         properties["ta_triangle_perimeter_m"] = None
-        properties["ta_triangle_area_ratio"] = None
+        properties["ta_triangle_ch_area_ratio"] = None
+        properties["ta_triangle_ch_intersection_area"] = None
+        properties["ta_triangle_ch_intersection_area_ratio"] = None
         properties["ta_triangularity"] = None
         properties["ta_dp_tolerance"] = None
         properties["ta_triangle_edge_lengths"] = None
@@ -375,21 +455,61 @@ for feature in data["features"]:
     properties["ta_triangle_area_sqm"] = triangle_area
     properties["ta_triangle_perimeter_m"] = triangle_perimeter
 
-    # Area ratio: ratio of concave hull area to triangle area
+    # Calculate concave hull area ratio (ch area / triangle area)
     ch_area = concave_hull_proj.area
     if triangle_area > 0:
-        area_ratio = ch_area / triangle_area
-        properties["ta_triangle_area_ratio"] = area_ratio
+        ch_area_ratio = ch_area / triangle_area
+        properties["ta_triangle_ch_area_ratio"] = ch_area_ratio
+        # Normalize to <= 1 by taking inverse if > 1
+        ch_area_ratio_normalized = (
+            ch_area_ratio if ch_area_ratio <= 1 else 1 / ch_area_ratio
+        )
+    else:
+        properties["ta_triangle_ch_area_ratio"] = None
+        ch_area_ratio_normalized = None
 
-        # Normalized triangularity score (0-1, where 1 is most triangular)
-        # If ratio is 0-1, keep as is; if > 1, take inverse
-        if area_ratio <= 1:
-            triangularity = area_ratio
-        else:
-            triangularity = 1 / area_ratio
+    # Calculate intersection of concave hull and triangle
+    intersection = concave_hull_proj.intersection(simplified)
+    # Sum areas if intersection is a collection of geometries
+    if intersection.is_empty:
+        intersect_area = 0
+    elif hasattr(intersection, "geoms"):
+        intersect_area = sum(g.area for g in intersection.geoms)
+    else:
+        intersect_area = intersection.area
+    properties["ta_triangle_ch_intersection_area"] = intersect_area
+
+    # Leftout area ratio (leftout area / triangle area)
+    leftout_area = (
+        ch_area - intersect_area
+    )  # leftout area is the area of the concave hull that is not covered by the triangle
+    if triangle_area > 0:
+        leftout_area_ratio = leftout_area / triangle_area
+        properties["ta_triangle_leftout_area_ratio"] = leftout_area_ratio
+    else:
+        properties["ta_triangle_leftout_area_ratio"] = None
+
+    # Intersection area ratio (intersection area / triangle area)
+    if triangle_area > 0:
+        intersection_area_ratio = intersect_area / triangle_area
+        properties["ta_triangle_ch_intersection_area_ratio"] = intersection_area_ratio
+
+    else:
+        properties["ta_triangle_ch_intersection_area_ratio"] = None
+        intersection_ratio_normalized = None
+
+    # MARK: Triangularity is the product of both normalized ratios
+    if (
+        ch_area_ratio_normalized is not None
+        and intersection_ratio_normalized is not None
+    ):
+        triangularity = (
+            ch_area_ratio_normalized
+            * intersection_area_ratio
+            * (1 - leftout_area_ratio)
+        )
         properties["ta_triangularity"] = triangularity
     else:
-        properties["ta_triangle_area_ratio"] = None
         properties["ta_triangularity"] = None
 
     # Calculate edge lengths
@@ -424,8 +544,14 @@ print(f"    - ta_triangle_vertices: Vertices of simplified triangle (WGS84)")
 print(f"    - ta_triangle_num_vertices: Number of vertices in simplified polygon")
 print(f"    - ta_triangle_area_sqm: Area of triangle in square meters")
 print(f"    - ta_triangle_perimeter_m: Perimeter of triangle in meters")
-print(f"    - ta_triangle_area_ratio: Ratio of concave hull area to triangle area")
-print(f"    - ta_triangularity: Normalized triangularity score (0-1, 1=triangular)")
+print(f"    - ta_triangle_ch_area_ratio: Ratio of concave hull area to triangle area")
+print(
+    f"    - ta_triangle_ch_intersection_area: Area of intersection (concave hull ∩ triangle)"
+)
+print(
+    f"    - ta_triangle_ch_intersection_area_ratio: Ratio of intersection area to triangle area"
+)
+print(f"    - ta_triangularity: Product of normalized area ratios (0-1, 1=triangular)")
 print(f"    - ta_dp_tolerance: Douglas-Peucker tolerance used for simplification")
 print(f"    - ta_triangle_edge_lengths: Lengths of the triangle edges (m)")
 print(f"    - ta_triangle_regularity: Ratio of shortest to longest edge")
