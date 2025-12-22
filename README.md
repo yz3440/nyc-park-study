@@ -90,3 +90,22 @@ uv run 2a_concave_hull_analysis.py
 ```bash
 uv run 3_generate_park_images.py
 ```
+
+## Triangle Labeling Tool
+
+A web-based tool for manually labeling park polygons as triangles. Located in `triangle_labeling_tool/`.
+
+```bash
+cd triangle_labeling_tool
+
+# Initialize database from source GeoJSON
+uv run 1_init_db.py
+
+# Start the labeling web UI (opens at http://localhost:8000)
+uv run 2_labeling_tool.py
+
+# Export labeled data back to GeoJSON
+uv run 3_export_geojson.py
+```
+
+See [triangle_labeling_tool/README.md](triangle_labeling_tool/README.md) for detailed usage instructions.

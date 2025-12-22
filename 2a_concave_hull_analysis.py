@@ -10,6 +10,7 @@ from shapely.ops import transform
 from shapely.validation import make_valid
 import pyproj
 import numpy as np
+from scipy.fft import rfft, rfftfreq
 
 
 def resample_polyline(
@@ -325,6 +326,343 @@ def calculate_edge_area_deviation(
     return total_deviation_area / triangle_area
 
 
+def get_edge_wave_samples(
+    ch_coords: list[tuple[float, float]],
+    edge_start: tuple[float, float],
+    edge_end: tuple[float, float],
+) -> list[dict]:
+    """
+    Project concave hull vertices onto a triangle edge and compute wave samples.
+
+    For each CH vertex, computes:
+    - t: position along the edge (0 to edge_length)
+    - amplitude: signed perpendicular distance to the edge line
+      (positive = left of edge direction, negative = right)
+
+    Args:
+        ch_coords: List of (x, y) coordinates of the CH segment for this edge
+        edge_start: (x, y) of triangle edge start
+        edge_end: (x, y) of triangle edge end
+
+    Returns:
+        List of dicts with {t, amplitude, pt, pt_projected}
+    """
+    dx = edge_end[0] - edge_start[0]
+    dy = edge_end[1] - edge_start[1]
+    edge_length_sq = dx * dx + dy * dy
+
+    if edge_length_sq == 0:
+        return []
+
+    edge_length = math.sqrt(edge_length_sq)
+    samples = []
+
+    for px, py in ch_coords:
+        # Vector from edge_start to point
+        wx = px - edge_start[0]
+        wy = py - edge_start[1]
+
+        # Parameter t along the edge (0 to 1, then scaled to length)
+        t_param = (wx * dx + wy * dy) / edge_length_sq
+        t_clamped = max(0, min(1, t_param))
+
+        # Signed perpendicular distance (cross product / length)
+        # Positive = point is to the left of the edge direction
+        cross = dx * wy - dy * wx
+        amplitude = cross / edge_length
+
+        # Projected point on segment
+        proj_x = edge_start[0] + t_clamped * dx
+        proj_y = edge_start[1] + t_clamped * dy
+
+        samples.append(
+            {
+                "t": t_clamped * edge_length,
+                "amplitude": amplitude,
+                "pt": (px, py),
+                "pt_projected": (proj_x, proj_y),
+            }
+        )
+
+    return samples
+
+
+def resample_wave_linear(samples: list[dict], sample_rate: int = 256) -> np.ndarray:
+    """
+    Resample wave samples to a fixed sample rate using linear interpolation.
+
+    Args:
+        samples: List of dicts with {t, amplitude, ...}
+        sample_rate: Number of samples in the output waveform
+
+    Returns:
+        numpy array of amplitudes at evenly spaced t values
+    """
+    if len(samples) < 2:
+        return np.zeros(sample_rate)
+
+    # Sort by t
+    sorted_samples = sorted(samples, key=lambda s: s["t"])
+    total_length = sorted_samples[-1]["t"]
+
+    if total_length <= 0:
+        return np.zeros(sample_rate)
+
+    buffer = np.zeros(sample_rate)
+    current_idx = 0
+
+    for i in range(sample_rate):
+        # Target t value
+        t = (i / sample_rate) * total_length
+
+        # Advance to the right segment
+        while (
+            current_idx < len(sorted_samples) - 1
+            and sorted_samples[current_idx + 1]["t"] < t
+        ):
+            current_idx += 1
+
+        s1 = sorted_samples[current_idx]
+        s2 = sorted_samples[min(current_idx + 1, len(sorted_samples) - 1)]
+
+        if s1 is s2 or s2["t"] == s1["t"]:
+            buffer[i] = s1["amplitude"]
+        else:
+            # Linear interpolation
+            seg_len = s2["t"] - s1["t"]
+            seg_progress = (t - s1["t"]) / seg_len
+            buffer[i] = (
+                s1["amplitude"] * (1 - seg_progress) + s2["amplitude"] * seg_progress
+            )
+
+    return buffer
+
+
+def analyze_waveform_fft(waveform: np.ndarray, edge_length: float) -> dict:
+    """
+    Perform FFT analysis on a waveform.
+
+    The waveform is normalized by edge_length before FFT to make the analysis
+    scale-independent (only shape matters, not absolute size).
+
+    Args:
+        waveform: numpy array of amplitude samples (in meters)
+        edge_length: length of the edge in meters (for normalization and frequency calc)
+
+    Returns:
+        dict with FFT analysis results (all values are scale-independent)
+    """
+    n = len(waveform)
+    if n < 4 or edge_length <= 0:
+        return {
+            "fft_magnitudes": [],
+            "fft_frequencies": [],
+            "dominant_frequency": None,
+            "dominant_wavelength": None,
+            "total_energy": None,
+            "dc_component": None,
+            "spectral_centroid": None,
+        }
+
+    # Normalize waveform by edge_length for scale-independence
+    # This converts amplitude from meters to "fraction of edge length"
+    # A 5m deviation on a 100m edge becomes 0.05 (same as 0.5m on 10m edge)
+    normalized_waveform = waveform / edge_length
+
+    # Compute real FFT (input is real, output is complex for positive frequencies)
+    fft_result = rfft(normalized_waveform)
+    magnitudes = np.abs(fft_result)
+
+    # Frequency bins in cycles per edge (dimensionless)
+    # This gives frequencies as "number of oscillations along the edge"
+    freq_bins = rfftfreq(n, d=1.0 / n)  # cycles per edge length
+
+    # DC component (average normalized amplitude)
+    dc_component = magnitudes[0] / n
+
+    # Skip DC for finding dominant frequency
+    if len(magnitudes) > 1:
+        ac_magnitudes = magnitudes[1:]
+        ac_frequencies = freq_bins[1:]
+
+        # Find dominant frequency (highest magnitude)
+        # Now in cycles per edge (1 = one full oscillation along edge)
+        dominant_idx = np.argmax(ac_magnitudes)
+        dominant_freq = ac_frequencies[dominant_idx]
+        # Dominant wavelength as fraction of edge length
+        dominant_wavelength = 1 / dominant_freq if dominant_freq > 0 else None
+
+        # Total energy (sum of squared magnitudes, excluding DC)
+        # Now dimensionless and comparable across parks of different sizes
+        total_energy = np.sum(ac_magnitudes**2)
+
+        # Spectral centroid (weighted average frequency in cycles per edge)
+        if total_energy > 0:
+            spectral_centroid = np.sum(ac_frequencies * ac_magnitudes**2) / total_energy
+        else:
+            spectral_centroid = 0
+    else:
+        dominant_freq = None
+        dominant_wavelength = None
+        total_energy = 0
+        spectral_centroid = 0
+
+    return {
+        "fft_magnitudes": magnitudes.tolist(),
+        "fft_frequencies": freq_bins.tolist(),
+        "dominant_frequency": (
+            float(dominant_freq) if dominant_freq is not None else None
+        ),
+        "dominant_wavelength": (
+            float(dominant_wavelength) if dominant_wavelength is not None else None
+        ),
+        "total_energy": float(total_energy),
+        "dc_component": float(dc_component),
+        "spectral_centroid": float(spectral_centroid) if spectral_centroid else None,
+    }
+
+
+def analyze_triangle_waveforms(
+    concave_hull_proj: Polygon | MultiPolygon,
+    triangle_proj: Polygon,
+    sample_rate: int = 256,
+) -> dict | None:
+    """
+    Analyze waveforms for all 3 edges of a triangle.
+
+    Projects the concave hull onto each triangle edge, resamples the
+    deviation as a waveform, and performs FFT analysis.
+
+    Args:
+        concave_hull_proj: Concave hull polygon in projected coordinates (UTM)
+        triangle_proj: Simplified triangle polygon in projected coordinates (UTM)
+        sample_rate: Number of samples for waveform resampling
+
+    Returns:
+        dict with analysis for each edge, or None if invalid
+    """
+    # Handle MultiPolygon by extracting the largest polygon
+    if isinstance(concave_hull_proj, MultiPolygon):
+        polygons = [g for g in concave_hull_proj.geoms if isinstance(g, Polygon)]
+        if polygons:
+            concave_hull_proj = max(polygons, key=lambda p: p.area)
+        else:
+            return None
+
+    if not isinstance(concave_hull_proj, Polygon) or not isinstance(
+        triangle_proj, Polygon
+    ):
+        return None
+
+    # Get vertices (remove duplicate last point)
+    ch_coords = list(concave_hull_proj.exterior.coords)[:-1]
+    tri_coords = list(triangle_proj.exterior.coords)[:-1]
+
+    if len(ch_coords) < 3 or len(tri_coords) != 3:
+        return None
+
+    # Find CH vertex closest to each triangle vertex (split points)
+    split_indices = []
+    for tri_vertex in tri_coords:
+        min_dist = float("inf")
+        best_idx = 0
+        for i, ch_pt in enumerate(ch_coords):
+            dist = math.sqrt(
+                (ch_pt[0] - tri_vertex[0]) ** 2 + (ch_pt[1] - tri_vertex[1]) ** 2
+            )
+            if dist < min_dist:
+                min_dist = dist
+                best_idx = i
+        split_indices.append(best_idx)
+
+    # Shift CH coordinates so first split index is 0
+    start_idx = split_indices[0]
+    ch_coords_shifted = ch_coords[start_idx:] + ch_coords[:start_idx]
+    n = len(ch_coords)
+    split_indices_shifted = [(idx - start_idx) % n for idx in split_indices]
+
+    edge_analyses = []
+
+    for edge_idx in range(3):
+        edge_start = tri_coords[edge_idx]
+        edge_end = tri_coords[(edge_idx + 1) % 3]
+
+        # Get CH segment indices
+        seg_start = split_indices_shifted[edge_idx]
+        seg_end = split_indices_shifted[(edge_idx + 1) % 3]
+
+        # Build segment vertices
+        if seg_end > seg_start:
+            segment_vertices = ch_coords_shifted[seg_start : seg_end + 1]
+        elif seg_end < seg_start:
+            segment_vertices = (
+                ch_coords_shifted[seg_start:] + ch_coords_shifted[: seg_end + 1]
+            )
+        else:
+            segment_vertices = [ch_coords_shifted[seg_start]]
+
+        # Get wave samples for this edge
+        samples = get_edge_wave_samples(segment_vertices, edge_start, edge_end)
+
+        if len(samples) < 2:
+            edge_analyses.append(
+                {
+                    "edge_index": edge_idx,
+                    "edge_length": math.sqrt(
+                        (edge_end[0] - edge_start[0]) ** 2
+                        + (edge_end[1] - edge_start[1]) ** 2
+                    ),
+                    "num_samples": len(samples),
+                    "waveform": [],
+                    "fft_analysis": None,
+                }
+            )
+            continue
+
+        # Resample to fixed sample rate
+        waveform = resample_wave_linear(samples, sample_rate)
+
+        # Calculate edge length
+        edge_length = math.sqrt(
+            (edge_end[0] - edge_start[0]) ** 2 + (edge_end[1] - edge_start[1]) ** 2
+        )
+
+        # Perform FFT analysis
+        fft_analysis = analyze_waveform_fft(waveform, edge_length)
+
+        edge_analyses.append(
+            {
+                "edge_index": edge_idx,
+                "edge_length": edge_length,
+                "num_samples": len(samples),
+                "waveform": waveform.tolist(),
+                "fft_analysis": fft_analysis,
+            }
+        )
+
+    # Aggregate statistics across all edges
+    total_energies = [
+        e["fft_analysis"]["total_energy"]
+        for e in edge_analyses
+        if e["fft_analysis"] and e["fft_analysis"]["total_energy"] is not None
+    ]
+    dominant_wavelengths = [
+        e["fft_analysis"]["dominant_wavelength"]
+        for e in edge_analyses
+        if e["fft_analysis"] and e["fft_analysis"]["dominant_wavelength"] is not None
+    ]
+
+    return {
+        "edges": edge_analyses,
+        "total_energy_sum": sum(total_energies) if total_energies else None,
+        "mean_dominant_wavelength": (
+            sum(dominant_wavelengths) / len(dominant_wavelengths)
+            if dominant_wavelengths
+            else None
+        ),
+    }
+
+
 print("Loading NYC Parks with Concave Hulls...")
 SOURCE_DATA_FILE = "./output_data/1a_parks_with_concave_hulls.geojson"
 OUTPUT_DATA_FILE = "./output_data/2a_parks_concave_hull_analysis.geojson"
@@ -591,6 +929,9 @@ for feature in data["features"]:
         properties["ta_triangle_edge_lengths"] = None
         properties["ta_triangle_num_vertices"] = None
         properties["ta_triangle_regularity"] = None
+        properties["ta_waveform_total_energy"] = None
+        properties["ta_waveform_mean_dominant_wavelength"] = None
+        properties["ta_waveform_edges"] = None
         continue
 
     # Convert to shapely geometry
@@ -750,6 +1091,9 @@ for feature in data["features"]:
         properties["ta_triangle_edge_lengths"] = None
         properties["ta_triangle_num_vertices"] = None
         properties["ta_triangle_regularity"] = None
+        properties["ta_waveform_total_energy"] = None
+        properties["ta_waveform_mean_dominant_wavelength"] = None
+        properties["ta_waveform_edges"] = None
         continue
 
     # Store the tolerance used
@@ -859,6 +1203,54 @@ for feature in data["features"]:
         edge_area_deviation_factor = 1.0 if edge_area_deviation == 0 else None
     properties["ta_edge_area_deviation_factor"] = edge_area_deviation_factor
 
+    # Waveform FFT analysis - analyze edge deviations as waveforms
+    waveform_analysis = analyze_triangle_waveforms(
+        concave_hull_proj, simplified, sample_rate=256
+    )
+
+    if waveform_analysis is not None:
+        # Store aggregate metrics
+        properties["ta_waveform_total_energy"] = waveform_analysis["total_energy_sum"]
+        properties["ta_waveform_mean_dominant_wavelength"] = waveform_analysis[
+            "mean_dominant_wavelength"
+        ]
+
+        # Store per-edge FFT summary (without full waveform/magnitude arrays to save space)
+        edge_summaries = []
+        for edge in waveform_analysis["edges"]:
+            fft = edge["fft_analysis"]
+            if fft:
+                edge_summaries.append(
+                    {
+                        "edge_index": edge["edge_index"],
+                        "edge_length": edge["edge_length"],
+                        "num_ch_vertices": edge["num_samples"],
+                        "dominant_frequency": fft["dominant_frequency"],
+                        "dominant_wavelength": fft["dominant_wavelength"],
+                        "total_energy": fft["total_energy"],
+                        "dc_component": fft["dc_component"],
+                        "spectral_centroid": fft["spectral_centroid"],
+                    }
+                )
+            else:
+                edge_summaries.append(
+                    {
+                        "edge_index": edge["edge_index"],
+                        "edge_length": edge["edge_length"],
+                        "num_ch_vertices": edge["num_samples"],
+                        "dominant_frequency": None,
+                        "dominant_wavelength": None,
+                        "total_energy": None,
+                        "dc_component": None,
+                        "spectral_centroid": None,
+                    }
+                )
+        properties["ta_waveform_edges"] = edge_summaries
+    else:
+        properties["ta_waveform_total_energy"] = None
+        properties["ta_waveform_mean_dominant_wavelength"] = None
+        properties["ta_waveform_edges"] = None
+
     # MARK: Triangularity is the product of both normalized ratios
     # Save individual factors for analysis
     properties["ta_triangularity_factor_original_ratio"] = original_ratio_normalized
@@ -885,14 +1277,19 @@ for feature in data["features"]:
         and edge_deviation_squared_factor is not None
     ):
         triangularity = (
-            min(
-                # intersection_area_ratio,
-                # leftout_factor,
-                original_ratio_normalized,
-                ch_area_ratio_normalized,
-            )
-            * edge_deviation_squared_factor
-            * edge_area_deviation_factor**2
+            ch_area_ratio_normalized
+            * intersection_area_ratio
+            * leftout_factor**2
+            * intersection_area_ratio
+            * (1 / (1 + waveform_analysis["total_energy_sum"]))
+            # min(
+            #     intersection_area_ratio,
+            #     leftout_factor,
+            #     original_ratio_normalized,
+            #     ch_area_ratio_normalized,
+            # )
+            # * edge_deviation_squared_factor
+            # * edge_area_deviation_factor**2
         )
         properties["ta_triangularity"] = triangularity
     else:
@@ -925,6 +1322,7 @@ for feature in data["features"]:
         )
         properties["ta_triangle_regularity"] = None
 
+
 print(f"  Added triangularity analysis fields (ta_ prefix):")
 print(f"    - ta_triangle_vertices: Vertices of simplified triangle (WGS84)")
 print(f"    - ta_triangle_num_vertices: Number of vertices in simplified polygon")
@@ -956,6 +1354,15 @@ print(f"    - ta_triangularity: Product of normalized area ratios (0-1, 1=triang
 print(f"    - ta_dp_tolerance: Douglas-Peucker tolerance used for simplification")
 print(f"    - ta_triangle_edge_lengths: Lengths of the triangle edges (m)")
 print(f"    - ta_triangle_regularity: Ratio of shortest to longest edge")
+print(
+    f"    - ta_waveform_total_energy: Sum of normalized FFT energy (scale-independent)"
+)
+print(
+    f"    - ta_waveform_mean_dominant_wavelength: Mean dominant wavelength (fraction of edge)"
+)
+print(
+    f"    - ta_waveform_edges: Per-edge FFT analysis (all values normalized/dimensionless)"
+)
 
 # Save the augmented data
 print("\nSaving analysis results...")

@@ -22,11 +22,15 @@ import requests
 import mercantile
 import numpy as np
 import geopandas as gpd
-from PIL import Image, ImageDraw, ImageColor
+from PIL import Image, ImageDraw, ImageColor, ImageFile
 
 # Increase PIL's max pixel limit for large parks (default ~178M pixels)
 # Safe since we're processing known data, not untrusted uploads
-Image.MAX_IMAGE_PIXELS = 1_000_000_000  # 1 billion pixels
+# Largest parks (Rockaway Beach, Flushing Meadows) need ~2.3B pixels at zoom 20
+Image.MAX_IMAGE_PIXELS = 3_000_000_000  # 3 billion pixels
+
+# Increase buffer size for writing large JPEG files (fixes "broken data stream" errors)
+ImageFile.MAXBLOCK = 2**30  # 1GB blocks (default is 64KB)
 from io import BytesIO
 from shapely.geometry import shape, box, Polygon, MultiPolygon
 from shapely.ops import transform
@@ -290,19 +294,71 @@ def make_bbox_square(bbox):
     return (west, south, east, north)
 
 
+def extract_all_coords(geometry):
+    """Extract all coordinates from any geometry type, even invalid ones.
+
+    Returns a list of (x, y) tuples.
+    """
+    from shapely import get_coordinates
+
+    try:
+        coords = get_coordinates(geometry)
+        if len(coords) > 0:
+            return list(coords)  # Convert numpy array to list
+    except Exception:
+        pass
+
+    # Fallback: manually extract coords
+    coords = []
+    try:
+        if hasattr(geometry, "exterior"):
+            coords.extend(list(geometry.exterior.coords))
+            for interior in geometry.interiors:
+                coords.extend(list(interior.coords))
+        elif hasattr(geometry, "geoms"):
+            for geom in geometry.geoms:
+                sub_coords = extract_all_coords(geom)
+                if sub_coords:
+                    coords.extend(sub_coords)
+        elif hasattr(geometry, "coords"):
+            coords.extend(list(geometry.coords))
+    except Exception:
+        pass
+
+    return coords if coords else None
+
+
 def get_convex_hull_bbox(geometry):
-    """Get bounding box of the convex hull of a geometry in WGS84"""
-    # Ensure we have a valid geometry
-    if geometry.is_empty:
+    """Get bounding box of the convex hull of a geometry in WGS84.
+
+    For invalid geometries, extracts all vertices and computes bounding box directly.
+    """
+    # Handle empty geometry
+    if geometry is None or geometry.is_empty:
         return None
 
-    # Get convex hull
-    convex_hull = geometry.convex_hull
+    # Try normal convex hull first (works for valid geometries)
+    if geometry.is_valid:
+        convex_hull = geometry.convex_hull
+        bounds = convex_hull.bounds
+        return bounds  # (west, south, east, north) in WGS84
 
-    # Get bounds (minx, miny, maxx, maxy)
-    bounds = convex_hull.bounds
+    # For invalid geometries: extract all coordinates and compute bbox
+    coords = extract_all_coords(geometry)
+    if coords is None or len(coords) == 0:
+        return None
 
-    return bounds  # (west, south, east, north) in WGS84
+    # Compute bounding box from all vertices (coords may be numpy array or list)
+    coords_array = np.array(coords)
+    xs = coords_array[:, 0]
+    ys = coords_array[:, 1]
+
+    return (
+        float(xs.min()),
+        float(ys.min()),
+        float(xs.max()),
+        float(ys.max()),
+    )  # (west, south, east, north)
 
 
 def calculate_bbox_dimensions_meters(bbox):
@@ -641,12 +697,28 @@ def download_and_stitch_tiles(bbox, zoom, park_name, park_dir, skip_existing=Tru
     # Create park directory only when we're about to save (avoids empty folders on termination)
     park_dir.mkdir(exist_ok=True)
 
-    # Save the cropped image as high-quality JPEG
+    # Save the cropped image as high-quality JPEG (fallback to PNG for very large images)
     width, height = cropped_img.size
-    cropped_img.save(output_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
-    console.print(
-        f"[green]✓ Saved {park_name}.jpg ({width}x{height} pixels, from {len(tiles)} tiles)[/green]"
-    )
+    try:
+        cropped_img.save(output_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+        console.print(
+            f"[green]✓ Saved {park_name}.jpg ({width}x{height} pixels, from {len(tiles)} tiles)[/green]"
+        )
+    except OSError as e:
+        if "broken data stream" in str(e):
+            # JPEG encoder failed for large image, try PNG instead
+            png_path = park_dir / f"{park_name}.png"
+            console.print(
+                f"[yellow]JPEG failed for large image, saving as PNG...[/yellow]"
+            )
+            cropped_img.save(png_path, "PNG", optimize=True)
+            console.print(
+                f"[green]✓ Saved {park_name}.png ({width}x{height} pixels, from {len(tiles)} tiles)[/green]"
+            )
+            # Also update output_path reference for consistency
+            output_path = png_path
+        else:
+            raise
 
     return cropped_img
 
@@ -858,6 +930,38 @@ def create_combined_image(park_name, park_dir, overlay_img):
     return combined_path
 
 
+def scan_existing_images(parks_df, output_dir):
+    """Scan existing image folders (file existence only, no validation).
+
+    Returns: dict with 'complete', 'missing', 'missing_overlay' lists
+    """
+    complete = []  # Parks with satellite image
+    missing = []  # Parks with no satellite image
+    missing_overlay = []  # Parks with satellite but no combined image
+
+    for idx, park in parks_df.iterrows():
+        park_id = park[":id"]
+        name311 = park.get("name311", "unnamed")
+        park_name = format_park_name(park_id, name311)
+        park_dir = output_dir / park_name
+        satellite_path = park_dir / f"{park_name}.jpg"
+        combined_path = park_dir / f"{park_name}_combined.jpg"
+
+        if not satellite_path.exists():
+            missing.append((park_name, name311))
+        else:
+            complete.append((park_name, name311))
+            # Check if overlay is missing (only if GENERATE_OVERLAY is enabled)
+            if GENERATE_OVERLAY and not combined_path.exists():
+                missing_overlay.append((park_name, name311))
+
+    return {
+        "complete": complete,
+        "missing": missing,
+        "missing_overlay": missing_overlay,
+    }
+
+
 def main():
     """Main function to process all parks"""
     # Validate settings first
@@ -891,11 +995,20 @@ def main():
     console.print("\n[bold]Loading park data...[/bold]")
     gdf = gpd.read_file(INPUT_GEOJSON)
 
-    # Filter out parks with invalid geometries
-    valid_parks = gdf[~gdf.geometry.is_empty & gdf.geometry.is_valid]
+    # Filter out only empty geometries (invalid geometries are now handled by extracting vertices)
+    empty_mask = gdf.geometry.is_empty
+    valid_parks = gdf[~empty_mask]
+    invalid_parks = gdf[
+        ~gdf.geometry.is_valid & ~empty_mask
+    ]  # Invalid but not empty (for display)
+    empty_parks = gdf[empty_mask]
     console.print(
-        f"[green]Found {len(valid_parks)} valid parks out of {len(gdf)} total[/green]"
+        f"[green]Found {len(valid_parks)} parks with geometry ({len(invalid_parks)} have invalid geometry but will be processed)[/green]"
     )
+    if len(empty_parks) > 0:
+        console.print(
+            f"[dim]Skipping {len(empty_parks)} parks with empty geometry[/dim]"
+        )
 
     # Sort by area (smallest first)
     valid_parks = valid_parks.sort_values("area_sqm", ascending=True)
@@ -906,6 +1019,57 @@ def main():
         console.print(
             f"[yellow]Processing only first {LIMIT_PARKS} smallest parks[/yellow]"
         )
+
+    # Pre-download summary: scan existing folders and check image validity
+    console.print("\n[bold]Scanning existing images...[/bold]")
+    scan_results = scan_existing_images(valid_parks, OUTPUT_DIR)
+
+    console.print("\n[bold cyan]Pre-Download Summary[/bold cyan]")
+    console.print(f"[green]  ✓ Complete: {len(scan_results['complete'])} parks[/green]")
+    console.print(f"[yellow]  ○ Missing: {len(scan_results['missing'])} parks[/yellow]")
+    if len(invalid_parks) > 0:
+        console.print(
+            f"[cyan]  ⚠ Invalid geometry (will use vertex bbox): {len(invalid_parks)} parks[/cyan]"
+        )
+    if len(empty_parks) > 0:
+        console.print(
+            f"[dim]  ⊘ Empty geometry (skipped): {len(empty_parks)} parks[/dim]"
+        )
+    if GENERATE_OVERLAY:
+        console.print(
+            f"[yellow]  ◐ Missing overlay: {len(scan_results['missing_overlay'])} parks[/yellow]"
+        )
+
+    # Show invalid parks details (these will be processed using vertex bounding box)
+    if len(invalid_parks) > 0:
+        console.print("\n[bold cyan]Invalid geometry (using vertex bbox):[/bold cyan]")
+        for idx, park in invalid_parks.iterrows():
+            name311 = park.get("name311", "unnamed")
+            park_id = park[":id"]
+            console.print(f"[cyan]  • {name311} ({park_id})[/cyan]")
+
+    # Show empty parks details (these are skipped)
+    if len(empty_parks) > 0:
+        console.print("\n[bold dim]Empty geometry (skipped):[/bold dim]")
+        for idx, park in empty_parks.iterrows():
+            name311 = park.get("name311", "unnamed")
+            park_id = park[":id"]
+            console.print(f"[dim]  • {name311} ({park_id})[/dim]")
+
+    # Show what will be downloaded
+    to_download = scan_results["missing"]
+    if to_download:
+        console.print(f"\n[bold]Parks to download ({len(to_download)}):[/bold]")
+        for park_name, name311 in to_download:
+            console.print(f"  • {name311}")
+
+    # Ask for confirmation before proceeding (unless DRY_RUN)
+    if not DRY_RUN and to_download:
+        console.print("")
+        proceed = console.input("[bold]Proceed with download? [y/N]: [/bold]")
+        if proceed.lower() != "y":
+            console.print("[yellow]Aborted by user.[/yellow]")
+            return
 
     # Process each park
     if DRY_RUN:
@@ -921,6 +1085,7 @@ def main():
     overlay_count = 0
     error_count = 0
     skipped_count = 0
+    error_details = []  # List of (park_name, error_message) tuples
 
     for idx, park in track(
         valid_parks.iterrows(), total=len(valid_parks), description="Processing parks"
@@ -996,6 +1161,7 @@ def main():
 
         if original_bbox is None:
             console.print(f"[red]Invalid geometry for park {park_id} ({name311})[/red]")
+            error_details.append((park_name, "Invalid geometry"))
             error_count += 1
             continue
 
@@ -1073,6 +1239,7 @@ def main():
             console.print(
                 f"[red]Error processing park {park_id} ({name311}): {e}[/red]"
             )
+            error_details.append((park_name, str(e)))
             error_count += 1
 
     # Summary
@@ -1104,7 +1271,12 @@ def main():
             console.print(
                 f"[yellow]Skipped (already exist): {skipped_count} images[/yellow]"
             )
-        console.print(f"[red]Errors: {error_count} parks[/red]")
+        if error_count > 0:
+            console.print(f"[red]Errors: {error_count} parks[/red]")
+            for park_name, error_msg in error_details:
+                console.print(f"[red]  • {park_name}: {error_msg}[/red]")
+        else:
+            console.print(f"[green]Errors: 0 parks[/green]")
         console.print(f"[cyan]Total processed: {len(valid_parks)} parks[/cyan]")
 
 
