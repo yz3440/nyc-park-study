@@ -1,0 +1,42 @@
+@import "tailwindcss";
+@import "mapbox-gl/dist/mapbox-gl.css";
+
+@theme {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Mono", "Droid Sans Mono",
+    "Source Code Pro", monospace;
+}
+
+/* Minimal black and white theme */
+:root {
+  --color-bg: #000000;
+  --color-fg: #ffffff;
+  --color-accent-green: #22c55e;
+  --color-accent-red: #ef4444;
+  --color-muted: #666666;
+  --color-border: #333333;
+}
+
+html,
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  overflow: hidden;
+  touch-action: pan-y;
+}
+
+/* Mapbox overrides for dark theme */
+.mapboxgl-ctrl-attrib {
+  background-color: rgba(0, 0, 0, 0.7) !important;
+  color: #666 !important;
+  font-size: 10px !important;
+}
+
+.mapboxgl-ctrl-attrib a {
+  color: #888 !important;
+}
+
+.mapboxgl-ctrl-logo {
+  opacity: 0.5;
+}
