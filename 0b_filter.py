@@ -7,7 +7,8 @@ import geopandas as gpd
 import os
 
 print("Loading NYC Parks GeoJSON...")
-SOURCE_DATA_FILE = "./source_data/Parks_Properties_20251119_modified.geojson"
+# SOURCE_DATA_FILE = "./source_data/Parks_Properties_20251119_modified.geojson"
+SOURCE_DATA_FILE = "./output_data/0a_parks_with_triangle_labels.geojson"
 OUTPUT_DATA_FILE = "./output_data/0b_parks_filtered.geojson"
 OUTPUT_DATA_FILE_REMOVED = "./output_data/0b_parks_filtered_removed.geojson"
 
